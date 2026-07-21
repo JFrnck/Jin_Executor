@@ -10,17 +10,17 @@ async function generate() {
     .setTitle('Yormun Executor API')
     .setVersion('1.0')
     .build();
-  
+
   const document = SwaggerModule.createDocument(app, config);
   const outputPath = path.resolve(process.cwd(), 'contracts/openapi.json');
-  
+
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(document, null, 2));
-  
+
   await app.close();
 }
 
-generate().catch(err => {
+generate().catch((err) => {
   console.error(err);
   process.exit(1);
 });

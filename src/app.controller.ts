@@ -1,17 +1,17 @@
 import { Controller, Post, Body, Get } from '@nestjs/common';
-import { AppService } from './app.module';
+import { AppService } from './app.service';
 
 @Controller()
 export class AppController {
-  constructor(private readonly appService: any) {}
+  constructor(private readonly appService: AppService) {}
 
   @Get()
   getHello(): string {
-    return 'Hello World!';
+    return this.appService.getHello();
   }
 
   @Post('execute')
-  execute(@Body() body: unknown): string {
+  execute(@Body() _body: unknown): string {
     return 'Execute stub';
   }
 }
