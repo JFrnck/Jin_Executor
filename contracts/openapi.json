@@ -17,15 +17,22 @@
     },
     "/execute": {
       "post": {
-        "operationId": "AppController_execute",
+        "operationId": "ExecuteController_execute",
         "parameters": [],
         "responses": {
-          "201": {
-            "description": ""
+          "200": {
+            "description": "Ejecución completada"
+          },
+          "403": {
+            "description": "Tool fuera de la whitelist del Executor"
+          },
+          "504": {
+            "description": "El pod no terminó dentro del timeout"
           }
         },
+        "summary": "Ejecuta código en un pod aislado (o lo envía a Modal con remote:true)",
         "tags": [
-          "App"
+          "execute"
         ]
       }
     }

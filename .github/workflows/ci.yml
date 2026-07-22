@@ -19,5 +19,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run test
+      - run: pnpm run test:e2e
+      # K3s real vía testcontainers (ADR 0003) — necesita Docker, que los
+      # runners de ubuntu-latest traen. Más lento que los pasos de arriba
+      # (pre-pull de imágenes + arranque de K3s-en-Docker).
+      - run: pnpm run test:integration
       - run: pnpm run build
-      - run: pnpm run generate:contract || true
+      - run: pnpm run generate:contract
