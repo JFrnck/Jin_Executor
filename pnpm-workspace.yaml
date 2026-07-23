@@ -1,0 +1,14 @@
+# No es un monorepo (AGENTS.md 4.1): este repo sigue siendo independiente,
+# con su propio lockfile. pnpm 11 centraliza aquí la aprobación de scripts
+# de instalación (allowBuilds) — es solo dónde vive esta configuración,
+# no una decisión de arquitectura.
+allowBuilds:
+  # unrs-resolver: dependencia real de typescript-eslint (resolución de
+  # módulos para el linter). Necesita su binario nativo.
+  unrs-resolver: true
+  # @swc/core: usado por unplugin-swc para los tests de Vitest (necesita
+  # emitir metadata de decoradores que Nest requiere en runtime).
+  '@swc/core': true
+  # @scarf/scarf: telemetría de terceros (analytics de instalación de
+  # paquetes npm). Sin función para el proyecto — bloqueado.
+  '@scarf/scarf': false
