@@ -18,8 +18,17 @@ export interface ExecutorToolDefinition {
    * resueltas al crear el pod o un proxy de egreso con ACL por dominio.
    */
   readonly egressWhitelist: readonly string[];
-  /** Límite duro en segundos — nunca se confía en el `timeout` del request por sí solo (BLUEPRINT 4.4: máx 5 min local). */
+  /** Límite duro en segundos para el tier LOCAL (pods Deno) — nunca se confía en el `timeout` del request por sí solo (BLUEPRINT 4.4: máx 5 min). */
   readonly maxTimeoutSeconds: number;
+  /**
+   * Límite duro en segundos para el tier de escalado (Modal, Fase 5.2,
+   * BLUEPRINT 4.5) — deliberadamente mayor al local (esa es la razón de
+   * escalar), pero sigue siendo un hard cap de costo/seguridad, no algo
+   * que el caller pueda extender.
+   */
+  readonly remoteMaxTimeoutSeconds: number;
+  /** Límite duro de memoria en MiB para el sandbox de Modal. */
+  readonly remoteMemoryLimitMiB: number;
 }
 
 const EXECUTOR_TOOL_REGISTRY: readonly ExecutorToolDefinition[] = Object.freeze(
@@ -27,9 +36,11 @@ const EXECUTOR_TOOL_REGISTRY: readonly ExecutorToolDefinition[] = Object.freeze(
     Object.freeze({
       name: 'runCode',
       description:
-        'Ejecuta código TypeScript en un pod Deno aislado (BLUEPRINT 4.4), sin acceso a red.',
+        'Ejecuta código TypeScript en un pod Deno aislado (BLUEPRINT 4.4, sin acceso a red) o código Python en un sandbox de Modal (BLUEPRINT 4.5, para dependencias científicas como pandas).',
       egressWhitelist: Object.freeze([]),
       maxTimeoutSeconds: 300,
+      remoteMaxTimeoutSeconds: 1800,
+      remoteMemoryLimitMiB: 4096,
     }),
   ] satisfies ExecutorToolDefinition[],
 );

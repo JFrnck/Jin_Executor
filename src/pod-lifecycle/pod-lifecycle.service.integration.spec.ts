@@ -36,13 +36,20 @@ describe('PodLifecycleService (integración, K3s real)', () => {
       KUBECONFIG_PATH: kubeconfigPath,
       AGENTS_SANDBOX_NAMESPACE,
       DENO_IMAGE,
+      // Este test solo ejercita el tier LOCAL (pods Deno) — ModalService
+      // nunca llega a invocar la API real de Modal acá, solo necesita
+      // construirse sin lanzar (Zod ya no corre en este ConfigService de
+      // prueba, así que estos valores son puramente para no crashear el
+      // constructor de ModalService).
+      MODAL_TOKEN_ID: 'test-token-id',
+      MODAL_TOKEN_SECRET: 'test-token-secret',
     });
 
     k8s = new K8sService(configService);
     service = new PodLifecycleService(
       new RbacValidatorService(),
       k8s,
-      new ModalService(),
+      new ModalService(configService),
       configService,
     );
 
@@ -96,9 +103,9 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     const result = await service.run({
       tool: 'runCode',
       code: "console.log('hello from pod')",
+      language: 'typescript',
       env: {},
       timeout: 60,
-      remote: false,
     });
 
     expect(result.succeeded).toBe(true);

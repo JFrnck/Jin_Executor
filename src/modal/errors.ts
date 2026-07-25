@@ -1,14 +1,12 @@
 import { YormunError } from '../common/errors/yormun-error';
 
-/** Stub explícito (PROMPTS.md 2.3): el cliente real de Modal llega en Fase 5. */
-export class ModalNotImplementedError extends YormunError {
-  constructor() {
-    super(
-      'Ejecución remota vía Modal todavía no está implementada (llega en Fase 5).',
-      {
-        code: 'MODAL_NOT_IMPLEMENTED',
-        httpStatus: 501,
-      },
-    );
+/** Envuelve cualquier fallo real del SDK de Modal (Fase 5.2) — nunca se expone el error crudo del SDK al caller. */
+export class ModalExecutionError extends YormunError {
+  constructor(message: string, cause?: unknown) {
+    super(`Error ejecutando en Modal: ${message}`, {
+      code: 'MODAL_EXECUTION_ERROR',
+      httpStatus: 502,
+      cause,
+    });
   }
 }

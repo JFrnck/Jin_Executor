@@ -14,6 +14,12 @@ describe('tool-whitelist', () => {
     expect(tools[0]?.maxTimeoutSeconds).toBe(300);
   });
 
+  it('runCode trae límites duros separados para el tier remoto (Modal, BLUEPRINT 4.5)', () => {
+    const tools = listExecutorTools();
+    expect(tools[0]?.remoteMaxTimeoutSeconds).toBe(1800);
+    expect(tools[0]?.remoteMemoryLimitMiB).toBe(4096);
+  });
+
   it('getExecutorToolDefinition devuelve undefined para una tool no registrada', () => {
     expect(getExecutorToolDefinition('deleteCluster')).toBeUndefined();
   });
@@ -26,6 +32,8 @@ describe('tool-whitelist', () => {
         description: '',
         egressWhitelist: [],
         maxTimeoutSeconds: 1,
+        remoteMaxTimeoutSeconds: 1,
+        remoteMemoryLimitMiB: 1,
       }),
     ).toThrow(TypeError);
   });

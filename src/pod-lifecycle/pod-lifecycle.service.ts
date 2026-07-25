@@ -12,9 +12,9 @@ import { RbacValidatorService } from '../rbac/rbac-validator.service';
 export interface RunRequest {
   readonly tool: string;
   readonly code: string;
+  readonly language: 'typescript' | 'python';
   readonly env: Readonly<Record<string, string>>;
   readonly timeout: number;
-  readonly remote: boolean;
 }
 
 /**
@@ -47,14 +47,23 @@ export class PodLifecycleService {
   async run(request: RunRequest): Promise<ExecutionResult> {
     const tool = this.rbacValidator.validate(request.tool);
 
+    // Decisión automática del Executor (BLUEPRINT 4.5), no algo que el
+    // caller declare: el tier local es Deno, que no puede correr Python
+    // en absoluto — "necesita Python" ya implica "necesita Modal".
+    const remote = request.language === 'python';
+
+    if (remote) {
+      // Modal SÍ resuelve dominios directamente (ver ModalService) —
+      // a diferencia del tier local, no hereda la limitación de
+      // K3s/Flannel (ADR 0003 punto 2), así que el chequeo de abajo no
+      // aplica acá.
+      return this.modal.runRemote(tool, request.code, request.env);
+    }
+
     if (tool.egressWhitelist.length > 0) {
       // Fail-safe (AGENTS.md 1.4): mejor rechazar ruidosamente que
       // conceder egreso de forma incorrecta. Ver rbac/tool-whitelist.ts.
       throw new UnresolvedEgressWhitelistError(tool.name, tool.egressWhitelist);
-    }
-
-    if (request.remote) {
-      return this.modal.runRemote(tool, request.code, request.env);
     }
 
     const runId = randomUUID();
