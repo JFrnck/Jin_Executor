@@ -7,6 +7,8 @@ const NO_EGRESS_TOOL: ExecutorToolDefinition = {
   description: '',
   egressWhitelist: [],
   maxTimeoutSeconds: 300,
+  remoteMaxTimeoutSeconds: 1800,
+  remoteMemoryLimitMiB: 4096,
 };
 
 const WITH_EGRESS_TOOL: ExecutorToolDefinition = {
@@ -14,6 +16,8 @@ const WITH_EGRESS_TOOL: ExecutorToolDefinition = {
   description: '',
   egressWhitelist: ['api.example.com'],
   maxTimeoutSeconds: 60,
+  remoteMaxTimeoutSeconds: 60,
+  remoteMemoryLimitMiB: 1024,
 };
 
 describe('buildPodSpec', () => {

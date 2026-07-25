@@ -26,11 +26,14 @@
           "403": {
             "description": "Tool fuera de la whitelist del Executor"
           },
+          "502": {
+            "description": "Fallo real de la API de Modal (tier remoto)"
+          },
           "504": {
-            "description": "El pod no terminó dentro del timeout"
+            "description": "El pod no terminó dentro del timeout (tier local)"
           }
         },
-        "summary": "Ejecuta código en un pod aislado (o lo envía a Modal con remote:true)",
+        "summary": "Ejecuta código en un pod Deno aislado (language: typescript) o en un sandbox de Modal (language: python) — la decisión de tier es automática según el language, no la declara el caller (BLUEPRINT 4.5)",
         "tags": [
           "execute"
         ]

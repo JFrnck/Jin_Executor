@@ -20,6 +20,14 @@ export const EnvSchema = z.object({
     .string()
     .min(1)
     .default('docker.io/denoland/deno:distroless-2.9.3'),
+  // src/modal: requeridas, no opcionales (AGENTS.md 8.4 fail-fast) —
+  // Fase 5.2, tier de escalado (BLUEPRINT 4.5).
+  MODAL_TOKEN_ID: z
+    .string()
+    .min(1, 'MODAL_TOKEN_ID es requerida (token de Modal)'),
+  MODAL_TOKEN_SECRET: z
+    .string()
+    .min(1, 'MODAL_TOKEN_SECRET es requerida (token secret de Modal)'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
