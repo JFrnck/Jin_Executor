@@ -168,19 +168,32 @@ describe('PreviewServiceLifecycleService (integración, K3s real)', () => {
     const podName = `agent-service-${info.id}`;
     await waitUntilPodRunning(k8s, podName);
 
+    // Reintenta unas pocas veces: CoreDNS puede tardar un instante en
+    // propagar el registro del Service recién creado (más notorio bajo
+    // la carga de un runner de CI que en local) — eso es latencia de
+    // sincronización, no la NetworkPolicy bloqueando de verdad. Si
+    // realmente estuviera bloqueado, seguiría fallando en todos los
+    // intentos (mismo comportamiento que probaría el test de
+    // aislamiento: BLOCKED consistente, no intermitente).
     const probeCode = `
-      try {
-        const resp = await fetch('http://${podName}.agents-sandbox.svc.cluster.local:3000', { signal: AbortSignal.timeout(8000) });
-        const text = await resp.text();
-        console.log('REACHED:' + text);
-      } catch (e) {
-        console.log('BLOCKED:' + e.constructor.name);
+      let lastError = 'ninguna';
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          const resp = await fetch('http://${podName}.agents-sandbox.svc.cluster.local:3000', { signal: AbortSignal.timeout(8000) });
+          const text = await resp.text();
+          console.log('REACHED:' + text);
+          break;
+        } catch (e) {
+          lastError = e.constructor.name;
+          if (attempt === 4) console.log('BLOCKED:' + lastError);
+          await new Promise((r) => setTimeout(r, 2000));
+        }
       }
     `;
     await runProbeInKubeSystem(testK3s, k8s, probeCode);
 
     await service.stop(info.id);
-  }, 120_000);
+  }, 180_000);
 
   it('el reaper destruye pod + Service + NetworkPolicy vencidos', async () => {
     const info = await service.start({
@@ -255,7 +268,9 @@ async function runProbeInKubeSystem(
       metadata: { name: podName, namespace: 'kube-system' },
       spec: {
         restartPolicy: 'Never',
-        activeDeadlineSeconds: 30,
+        // 5 reintentos × (hasta 8s de timeout de fetch + 2s de espera)
+        // = hasta ~50s en el peor caso — con margen.
+        activeDeadlineSeconds: 70,
         containers: [
           {
             name: 'probe',
@@ -267,7 +282,7 @@ async function runProbeInKubeSystem(
     },
   });
 
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 75_000;
   let phase: string | undefined;
   while (Date.now() < deadline) {
     const pod = await testK3s.coreApi.readNamespacedPod({
