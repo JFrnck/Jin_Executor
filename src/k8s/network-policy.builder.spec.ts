@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildPodNetworkPolicy } from './network-policy.builder';
+import {
+  buildPodNetworkPolicy,
+  buildServiceIngressNetworkPolicy,
+} from './network-policy.builder';
 
 describe('buildPodNetworkPolicy', () => {
   it('selecciona el pod por su run-id, no por nombre', () => {
@@ -9,7 +12,7 @@ describe('buildPodNetworkPolicy', () => {
       egressCidrs: [],
     });
 
-    expect(policy.spec?.podSelector.matchLabels).toEqual({
+    expect(policy.spec?.podSelector?.matchLabels).toEqual({
       'jin.io/run-id': 'abc123',
     });
     expect(policy.metadata?.name).toBe('agent-run-abc123');
@@ -36,5 +39,39 @@ describe('buildPodNetworkPolicy', () => {
       { ipBlock: { cidr: '203.0.113.0/24' } },
       { ipBlock: { cidr: '198.51.100.5/32' } },
     ]);
+  });
+});
+
+describe('buildServiceIngressNetworkPolicy', () => {
+  it('selecciona el pod por su service-id, permite Ingress SOLO desde kube-system (Traefik) al puerto expuesto', () => {
+    const policy = buildServiceIngressNetworkPolicy({
+      serviceId: 'svc-1',
+      namespace: 'agents-sandbox',
+      port: 3000,
+    });
+
+    expect(policy.spec?.podSelector?.matchLabels).toEqual({
+      'jin.io/service-id': 'svc-1',
+    });
+    expect(policy.spec?.policyTypes).toEqual(['Ingress']);
+    expect(policy.spec?.ingress?.[0]?._from).toEqual([
+      {
+        namespaceSelector: {
+          matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
+        },
+      },
+    ]);
+    expect(policy.spec?.ingress?.[0]?.ports).toEqual([
+      { port: 3000, protocol: 'TCP' },
+    ]);
+  });
+
+  it('el nombre de la policy deriva del serviceId, distinto de la de egress de pods run-to-completion', () => {
+    const policy = buildServiceIngressNetworkPolicy({
+      serviceId: 'svc-1',
+      namespace: 'ns',
+      port: 3000,
+    });
+    expect(policy.metadata?.name).toBe('svc-1-ingress');
   });
 });

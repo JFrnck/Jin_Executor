@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getExecutorToolDefinition,
+  isRunToCompletionTool,
   listExecutorTools,
   type ExecutorToolDefinition,
 } from './tool-whitelist';
@@ -8,16 +9,34 @@ import {
 describe('tool-whitelist', () => {
   it('lista runCode con egressWhitelist vacío y maxTimeoutSeconds=300 (BLUEPRINT 4.4)', () => {
     const tools = listExecutorTools();
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.name).toBe('runCode');
-    expect(tools[0]?.egressWhitelist).toEqual([]);
-    expect(tools[0]?.maxTimeoutSeconds).toBe(300);
+    expect(tools).toHaveLength(4);
+    const runCode = tools.find((t) => t.name === 'runCode');
+    expect(runCode?.egressWhitelist).toEqual([]);
+    if (!runCode || !isRunToCompletionTool(runCode)) {
+      throw new Error('runCode debe existir y ser una tool run-to-completion');
+    }
+    expect(runCode.maxTimeoutSeconds).toBe(300);
   });
 
   it('runCode trae límites duros separados para el tier remoto (Modal, BLUEPRINT 4.5)', () => {
-    const tools = listExecutorTools();
-    expect(tools[0]?.remoteMaxTimeoutSeconds).toBe(1800);
-    expect(tools[0]?.remoteMemoryLimitMiB).toBe(4096);
+    const runCode = getExecutorToolDefinition('runCode');
+    if (!runCode || !isRunToCompletionTool(runCode)) {
+      throw new Error('runCode debe existir y ser una tool run-to-completion');
+    }
+    expect(runCode.remoteMaxTimeoutSeconds).toBe(1800);
+    expect(runCode.remoteMemoryLimitMiB).toBe(4096);
+  });
+
+  it('lista las 3 tools de pods de servicio (Fase 5.5, ADR 0006) con isServiceTool=true', () => {
+    for (const name of [
+      'startPreviewService',
+      'stopPreviewService',
+      'listPreviewServices',
+    ]) {
+      const tool = getExecutorToolDefinition(name);
+      expect(tool?.isServiceTool).toBe(true);
+      expect(tool && isRunToCompletionTool(tool)).toBe(false);
+    }
   });
 
   it('getExecutorToolDefinition devuelve undefined para una tool no registrada', () => {

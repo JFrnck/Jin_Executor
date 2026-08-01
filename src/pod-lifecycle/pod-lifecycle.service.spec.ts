@@ -44,6 +44,20 @@ describe('PodLifecycleService — ramas previas a K8s', () => {
     ).rejects.toThrow(ForbiddenToolError);
   });
 
+  it('rechaza con ForbiddenToolError una tool de pod de servicio (Fase 5.5) — fail-safe si algo se equivoca de ruta', async () => {
+    const service = buildService();
+
+    await expect(
+      service.run({
+        tool: 'startPreviewService',
+        code: 'x',
+        language: 'typescript',
+        env: {},
+        timeout: 30,
+      }),
+    ).rejects.toThrow(ForbiddenToolError);
+  });
+
   it('language: "python" delega en ModalService.runRemote — decisión automática del Executor (BLUEPRINT 4.5), no del caller', async () => {
     const runRemoteMock = vi
       .fn()

@@ -1,13 +1,23 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   CoreV1Api,
+  CustomObjectsApi,
   KubeConfig,
   NetworkingV1Api,
   type V1NetworkPolicy,
   type V1Pod,
+  type V1Service,
 } from '@kubernetes/client-node';
 import { ConfigService } from '@nestjs/config';
 import { PodTimeoutError } from './errors';
+
+// Primer uso en el repo de un CRD de terceros (Fase 5.5, ADR 0006 punto
+// 7): IngressRoute de Traefik. Grupo `traefik.io` (no el legado
+// `traefik.containo.us`) — confirmado contra la versión de K3s pinneada
+// en los tests de integración (v1.36.2-k3s1, bundlea Traefik v3).
+const INGRESSROUTE_GROUP = 'traefik.io';
+const INGRESSROUTE_VERSION = 'v1alpha1';
+const INGRESSROUTE_PLURAL = 'ingressroutes';
 
 const POD_POLL_INTERVAL_MS = 500;
 
@@ -31,6 +41,7 @@ export class K8sService {
   private readonly logger = new Logger(K8sService.name);
   private readonly coreApi: CoreV1Api;
   private readonly networkingApi: NetworkingV1Api;
+  private readonly customObjectsApi: CustomObjectsApi;
   readonly namespace: string;
 
   // Tipado como la clase real `ConfigService` (no el alias `AppConfigService`
@@ -52,6 +63,7 @@ export class K8sService {
     }
     this.coreApi = kubeConfig.makeApiClient(CoreV1Api);
     this.networkingApi = kubeConfig.makeApiClient(NetworkingV1Api);
+    this.customObjectsApi = kubeConfig.makeApiClient(CustomObjectsApi);
     // Con la clase base ConfigService (no el alias validado), .get()
     // devuelve `T | undefined` — el default aquí espeja el de
     // env.schema.ts; en la práctica Zod ya garantiza un valor siempre.
@@ -126,6 +138,70 @@ export class K8sService {
     } catch (error) {
       this.logger.warn(
         `deleteNetworkPolicy(${name}) falló (probablemente ya no existía): ${String(error)}`,
+      );
+    }
+  }
+
+  /** Lista pods por label selector exacto — usado por `PreviewServiceLifecycleService`/el reaper (Fase 5.5) en vez de una tabla propia: Kubernetes YA es el store de estado (ADR 0006 punto 3). */
+  async listPodsByLabel(labelSelector: string): Promise<V1Pod[]> {
+    const result = await this.coreApi.listNamespacedPod({
+      namespace: this.namespace,
+      labelSelector,
+    });
+    return result.items;
+  }
+
+  async createService(service: V1Service): Promise<V1Service> {
+    return this.coreApi.createNamespacedService({
+      namespace: this.namespace,
+      body: service,
+    });
+  }
+
+  /** Nunca lanza: mismo razonamiento que deletePod. */
+  async deleteService(name: string): Promise<void> {
+    try {
+      await this.coreApi.deleteNamespacedService({
+        name,
+        namespace: this.namespace,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `deleteService(${name}) falló (probablemente ya no existía): ${String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * `IngressRoute` (CRD de Traefik, Fase 5.5 ADR 0006 punto 7) vía
+   * `CustomObjectsApi` — no es un recurso built-in de K8s, así que no
+   * hay un método tipado como `createNamespacedPod`; `body` queda como
+   * `unknown` a propósito (el caller, `service-pod-spec.builder.ts`, es
+   * quien conoce y valida la forma real del manifest).
+   */
+  async createIngressRoute(body: unknown): Promise<void> {
+    await this.customObjectsApi.createNamespacedCustomObject({
+      group: INGRESSROUTE_GROUP,
+      version: INGRESSROUTE_VERSION,
+      namespace: this.namespace,
+      plural: INGRESSROUTE_PLURAL,
+      body,
+    });
+  }
+
+  /** Nunca lanza: mismo razonamiento que deletePod. */
+  async deleteIngressRoute(name: string): Promise<void> {
+    try {
+      await this.customObjectsApi.deleteNamespacedCustomObject({
+        group: INGRESSROUTE_GROUP,
+        version: INGRESSROUTE_VERSION,
+        namespace: this.namespace,
+        plural: INGRESSROUTE_PLURAL,
+        name,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `deleteIngressRoute(${name}) falló (probablemente ya no existía): ${String(error)}`,
       );
     }
   }

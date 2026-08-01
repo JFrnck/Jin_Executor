@@ -6,8 +6,12 @@ import { buildPodSpec } from '../k8s/pod-spec.builder';
 import { K8sService } from '../k8s/k8s.service';
 import { podNameForRun } from '../k8s/labels';
 import { ModalService } from '../modal/modal.service';
-import { UnresolvedEgressWhitelistError } from '../rbac/errors';
+import {
+  ForbiddenToolError,
+  UnresolvedEgressWhitelistError,
+} from '../rbac/errors';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
+import { isRunToCompletionTool } from '../rbac/tool-whitelist';
 
 export interface RunRequest {
   readonly tool: string;
@@ -45,7 +49,15 @@ export class PodLifecycleService {
   }
 
   async run(request: RunRequest): Promise<ExecutionResult> {
-    const tool = this.rbacValidator.validate(request.tool);
+    const validated = this.rbacValidator.validate(request.tool);
+    // Fail-safe (Fase 5.5, ADR 0006): una tool de pod de servicio nunca
+    // debería llegar acá (el HTTP surface las rutea a /services, no
+    // /execute) — pero si algo se equivoca de ruta, rechazar de forma
+    // explícita en vez de correrla como run-to-completion.
+    if (!isRunToCompletionTool(validated)) {
+      throw new ForbiddenToolError(validated.name);
+    }
+    const tool = validated;
 
     // Decisión automática del Executor (BLUEPRINT 4.5), no algo que el
     // caller declare: el tier local es Deno, que no puede correr Python
