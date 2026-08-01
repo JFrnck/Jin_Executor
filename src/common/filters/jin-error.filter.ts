@@ -5,14 +5,14 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { YormunError } from '../errors/yormun-error';
+import { JinError } from '../errors/jin-error';
 
-/** Traduce YormunError.httpStatus a una respuesta HTTP real (ej. RBAC 403). */
-@Catch(YormunError)
-export class YormunErrorFilter implements ExceptionFilter {
-  private readonly logger = new Logger(YormunErrorFilter.name);
+/** Traduce JinError.httpStatus a una respuesta HTTP real (ej. RBAC 403). */
+@Catch(JinError)
+export class JinErrorFilter implements ExceptionFilter {
+  private readonly logger = new Logger(JinErrorFilter.name);
 
-  catch(exception: YormunError, host: ArgumentsHost): void {
+  catch(exception: JinError, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
     const status = exception.httpStatus ?? 500;
 

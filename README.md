@@ -1,6 +1,6 @@
-# Yormun_Executor
+# Jin_Executor
 
-Único proceso autorizado a hablar con Kubernetes (AGENTS.md 5.3, BLUEPRINT 4.2). Ejecuta código LLM-generado en pods Deno efímeros bajo demanda, sin warm pool. Ver `../Yormun_Docs/` para la documentación canónica (BLUEPRINT, AGENTS, ADR 0003).
+Único proceso autorizado a hablar con Kubernetes (AGENTS.md 5.3, BLUEPRINT 4.2). Ejecuta código LLM-generado en pods Deno efímeros bajo demanda, sin warm pool. Ver `../Jin_Docs/` para la documentación canónica (BLUEPRINT, AGENTS, ADR 0003).
 
 ## Setup
 
@@ -37,14 +37,14 @@ pnpm test:integration  # K3s real vía testcontainers (@testcontainers/k3s) — 
 pnpm test:e2e           # e2e del árbol completo de Nest
 ```
 
-Los tests de integración levantan un clúster K3s real, pre-pullean las imágenes que van a usar (Deno tarda >100s sin pre-pull en un containerd anidado — mismo problema que motiva el pre-pull de producción en Yormun_Infra), y verifican **de verdad** que un pod en `agents-sandbox` no puede alcanzar un servicio en `yormun` — no un mock del cliente de Kubernetes. Ver ADR 0003 para el razonamiento completo.
+Los tests de integración levantan un clúster K3s real, pre-pullean las imágenes que van a usar (Deno tarda >100s sin pre-pull en un containerd anidado — mismo problema que motiva el pre-pull de producción en Jin_Infra), y verifican **de verdad** que un pod en `agents-sandbox` no puede alcanzar un servicio en `jin` — no un mock del cliente de Kubernetes. Ver ADR 0003 para el razonamiento completo.
 
-## Pendiente (coordinar PR en Yormun_Infra)
+## Pendiente (coordinar PR en Jin_Infra)
 
 El ServiceAccount del Executor necesita, además de `create/get/list/delete` de Pods (BLUEPRINT 4.2), permiso para `create/delete` de `networkpolicies` en `agents-sandbox` — necesario para que el mecanismo de whitelist de egreso por tool (hoy sin tools que lo activen) pueda aplicarse cuando exista una. Ver ADR 0003 punto 3.
 
 ## Contrato OpenAPI
 
 ```bash
-pnpm generate:contract  # emite contracts/openapi.json — lo consume Yormun_Core
+pnpm generate:contract  # emite contracts/openapi.json — lo consume Jin_Core
 ```

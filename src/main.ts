@@ -3,14 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import type { AppConfigService } from './config';
-import { YormunErrorFilter } from './common/filters/yormun-error.filter';
+import { JinErrorFilter } from './common/filters/jin-error.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.useGlobalFilters(new YormunErrorFilter());
+  app.useGlobalFilters(new JinErrorFilter());
 
   const config = new DocumentBuilder()
-    .setTitle('Yormun Executor API')
+    .setTitle('Jin Executor API')
     .setVersion('1.0')
     .build();
   const document = SwaggerModule.createDocument(app, config);

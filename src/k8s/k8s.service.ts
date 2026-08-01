@@ -17,8 +17,8 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Único punto de contacto con la API de Kubernetes en todo el proyecto
- * (AGENTS.md 5.3: "el código de Yormun_Core no importa
- * @kubernetes/client-node... Yormun_Executor es el único autorizado").
+ * (AGENTS.md 5.3: "el código de Jin_Core no importa
+ * @kubernetes/client-node... Jin_Executor es el único autorizado").
  *
  * `namespace` se fija UNA vez al construir el servicio y ningún método
  * acepta un namespace como parámetro — así el propio diseño hace

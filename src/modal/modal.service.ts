@@ -5,8 +5,8 @@ import type { ExecutionResult } from '../execute/execution-result';
 import type { ExecutorToolDefinition } from '../rbac/tool-whitelist';
 import { ModalExecutionError } from './errors';
 
-const MODAL_APP_NAME = 'yormun-executor';
-const DATA_SCIENCE_IMAGE_NAME = 'yormun-data-science';
+const MODAL_APP_NAME = 'jin-executor';
+const DATA_SCIENCE_IMAGE_NAME = 'jin-data-science';
 
 async function readAllText(stream: ReadableStream<string>): Promise<string> {
   const reader = stream.getReader();
@@ -33,7 +33,7 @@ export class ModalService {
   // Cacheados de forma PEREZOSA (no en onModuleInit): construir la imagen
   // con pandas/numpy si no existe puede tardar varios minutos, y
   // resolverlo en el bootstrap del proceso rompería lint/build/e2e en CI
-  // igual que le pasó a GoogleOAuthService en Yormun_Core (Fase 4.2, ver
+  // igual que le pasó a GoogleOAuthService en Jin_Core (Fase 4.2, ver
   // STATUS.md) — no repetir ese error acá. Se resuelve en el primer
   // runRemote() real y queda cacheado para el resto de la vida del pod;
   // si la resolución falla, se limpia el caché para permitir reintento en

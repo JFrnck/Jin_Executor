@@ -1,7 +1,7 @@
 /**
  * Whitelist estática de tools que el Executor está autorizado a correr
  * (BLUEPRINT 4.2: "valida contra whitelist de herramientas antes de
- * crear el pod"). Independiente del registry de Yormun_Core
+ * crear el pod"). Independiente del registry de Jin_Core
  * (src/tools/registry.ts allá declara hitlLevel, un concepto distinto) —
  * no hay paquetes compartidos entre repos (AGENTS.md 4.5).
  */

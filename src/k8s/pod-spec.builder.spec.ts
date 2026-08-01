@@ -34,7 +34,7 @@ describe('buildPodSpec', () => {
 
     expect(pod.metadata?.name).toBe('agent-run-abc123');
     expect(pod.metadata?.namespace).toBe('agents-sandbox');
-    expect(pod.metadata?.labels?.['yormun.io/run-id']).toBe('abc123');
+    expect(pod.metadata?.labels?.['jin.io/run-id']).toBe('abc123');
   });
 
   it('usa "deno run" (nunca "eval": eval ignora TODOS los permisos en Deno 2.9)', () => {

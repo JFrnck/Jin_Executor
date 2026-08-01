@@ -7,11 +7,11 @@ import {
 } from '@kubernetes/client-node';
 
 // Pinneado (nunca `latest`), misma versión que scripts/bootstrap de
-// Yormun_Infra (v1.36.2+k3s1 → tag de Docker Hub usa guion, no +).
+// Jin_Infra (v1.36.2+k3s1 → tag de Docker Hub usa guion, no +).
 const K3S_IMAGE = 'rancher/k3s:v1.36.2-k3s1';
 
 export const AGENTS_SANDBOX_NAMESPACE = 'agents-sandbox';
-export const YORMUN_NAMESPACE = 'yormun';
+export const JIN_NAMESPACE = 'jin';
 
 export interface TestK3s {
   container: StartedK3sContainer;
@@ -23,9 +23,9 @@ export interface TestK3s {
 
 /**
  * Réplica MÍNIMA (no exhaustiva) del aislamiento de red real de
- * Yormun_Infra (k8s/base/network-policies/agents-sandbox.yaml):
+ * Jin_Infra (k8s/base/network-policies/agents-sandbox.yaml):
  * default-deny total + DNS de salida únicamente. Mantener en sync a
- * mano — Executor y Yormun_Infra son repos independientes, sin paquete
+ * mano — Executor y Jin_Infra son repos independientes, sin paquete
  * compartido (AGENTS.md 4.5), así que no hay una única fuente de verdad
  * ejecutable entre ambos.
  */
@@ -74,7 +74,7 @@ const CONTAINERD_SOCKET_ADDRESS = '/run/k3s/containerd/containerd.sock';
 
 /**
  * Pre-pull dentro del nodo K3s-en-Docker (mismo mecanismo que
- * scripts/bootstrap/06-prepull-deno.sh de Yormun_Infra en producción —
+ * scripts/bootstrap/06-prepull-deno.sh de Jin_Infra en producción —
  * BLUEPRINT 4.4: sin esto, el primer pod con esa imagen puede tardar
  * >100s en un containerd anidado, muy por encima de cualquier timeout
  * razonable de test).
@@ -143,7 +143,7 @@ export async function startTestK3s(
     body: { metadata: { name: AGENTS_SANDBOX_NAMESPACE } },
   });
   await coreApi.createNamespace({
-    body: { metadata: { name: YORMUN_NAMESPACE } },
+    body: { metadata: { name: JIN_NAMESPACE } },
   });
 
   for (const policy of agentsSandboxNetworkPolicies()) {

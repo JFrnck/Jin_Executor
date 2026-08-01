@@ -79,10 +79,10 @@ describe('ModalService.runRemote', () => {
 
     const result = await service.runRemote(NO_EGRESS_TOOL, 'print("hola")', {});
 
-    expect(appsFromNameMock).toHaveBeenCalledWith('yormun-executor', {
+    expect(appsFromNameMock).toHaveBeenCalledWith('jin-executor', {
       createIfMissing: true,
     });
-    expect(imagesFromNameMock).toHaveBeenCalledWith('yormun-data-science');
+    expect(imagesFromNameMock).toHaveBeenCalledWith('jin-data-science');
     expect(fromRegistryMock).not.toHaveBeenCalled();
     expect(result).toEqual({ runId: 'sb-1', succeeded: true, logs: 'hola' });
   });
@@ -138,7 +138,7 @@ describe('ModalService.runRemote', () => {
     expect(dockerfileCommandsMock).toHaveBeenCalledWith([
       'RUN pip install --no-cache-dir pandas numpy',
     ]);
-    expect(publishMock).toHaveBeenCalledWith('yormun-data-science');
+    expect(publishMock).toHaveBeenCalledWith('jin-data-science');
   });
 
   it('cachea la app y la imagen entre llamadas — no vuelve a resolverlas', async () => {
