@@ -7,7 +7,7 @@ import * as path from 'path';
 async function generate() {
   const app = await NestFactory.create(AppModule, { logger: false });
   const config = new DocumentBuilder()
-    .setTitle('Yormun Executor API')
+    .setTitle('Jin Executor API')
     .setVersion('1.0')
     .build();
 

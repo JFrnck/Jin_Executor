@@ -15,7 +15,7 @@ allowBuilds:
   # Transitivos de testcontainers (integration tests con K3s real,
   # AGENTS.md 6.2): ssh2/cpu-features para exec/tunnel hacia el daemon
   # Docker, protobufjs para su protocolo con el runtime. Ninguno
-  # sospechoso, todos necesarios (mismo trío que en Yormun_Infra).
+  # sospechoso, todos necesarios (mismo trío que en Jin_Infra).
   cpu-features: true
   protobufjs: true
   ssh2: true

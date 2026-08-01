@@ -1,6 +1,6 @@
-import { YormunError } from '../common/errors/yormun-error';
+import { JinError } from '../common/errors/jin-error';
 
-export class PodTimeoutError extends YormunError {
+export class PodTimeoutError extends JinError {
   constructor(podName: string, timeoutMs: number) {
     super(`El pod "${podName}" no terminó dentro de ${timeoutMs}ms.`, {
       code: 'EXECUTOR_POD_TIMEOUT',

@@ -10,7 +10,7 @@ describe('buildPodNetworkPolicy', () => {
     });
 
     expect(policy.spec?.podSelector.matchLabels).toEqual({
-      'yormun.io/run-id': 'abc123',
+      'jin.io/run-id': 'abc123',
     });
     expect(policy.metadata?.name).toBe('agent-run-abc123');
     expect(policy.metadata?.namespace).toBe('agents-sandbox');

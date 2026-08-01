@@ -15,7 +15,7 @@ export const EnvSchema = z.object({
   // apuntando a un kubeconfig real.
   KUBECONFIG_PATH: z.string().optional(),
   // Pinneada (nunca `latest`) — debe coincidir con la que
-  // scripts/bootstrap/06-prepull-deno.sh de Yormun_Infra pre-descarga.
+  // scripts/bootstrap/06-prepull-deno.sh de Jin_Infra pre-descarga.
   DENO_IMAGE: z
     .string()
     .min(1)

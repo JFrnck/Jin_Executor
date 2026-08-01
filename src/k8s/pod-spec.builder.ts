@@ -53,7 +53,7 @@ export function buildPodSpec(input: BuildPodSpecInput): V1Pod {
       namespace: input.namespace,
       labels: {
         [RUN_ID_LABEL]: input.runId,
-        'yormun.io/tool': input.tool.name,
+        'jin.io/tool': input.tool.name,
       },
     },
     spec: {
@@ -83,7 +83,7 @@ export function buildPodSpec(input: BuildPodSpecInput): V1Pod {
             readOnlyRootFilesystem: true,
             capabilities: { drop: ['ALL'] },
           },
-          // Alineado con el LimitRange de agents-sandbox (Yormun_Infra
+          // Alineado con el LimitRange de agents-sandbox (Jin_Infra
           // k8s/base/namespaces/agents-sandbox-limitrange.yaml): default
           // 512Mi/500m, máximo 2Gi/1500m, límite ≤ 3× el request.
           resources: {

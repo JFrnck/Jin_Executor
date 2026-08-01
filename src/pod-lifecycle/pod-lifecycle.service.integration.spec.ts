@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AGENTS_SANDBOX_NAMESPACE,
   startTestK3s,
-  YORMUN_NAMESPACE,
+  JIN_NAMESPACE,
   type TestK3s,
 } from '../../test/support/k3s-testcontainer';
 import { K8sService } from '../k8s/k8s.service';
@@ -27,7 +27,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     testK3s = await startTestK3s([DENO_IMAGE, HTTP_ECHO_IMAGE]);
 
     kubeconfigTmpDir = mkdtempSync(
-      path.join(tmpdir(), 'yormun-executor-kubeconfig-'),
+      path.join(tmpdir(), 'jin-executor-kubeconfig-'),
     );
     const kubeconfigPath = path.join(kubeconfigTmpDir, 'kubeconfig.yaml');
     writeFileSync(kubeconfigPath, testK3s.kubeConfigString);
@@ -54,13 +54,13 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     );
 
     // Objetivo del test de aislamiento: un servicio HTTP trivial en el
-    // namespace `yormun` (el núcleo confiable, BLUEPRINT 5.2).
+    // namespace `jin` (el núcleo confiable, BLUEPRINT 5.2).
     await testK3s.coreApi.createNamespacedPod({
-      namespace: YORMUN_NAMESPACE,
+      namespace: JIN_NAMESPACE,
       body: {
         metadata: {
           name: 'target-http-echo',
-          namespace: YORMUN_NAMESPACE,
+          namespace: JIN_NAMESPACE,
           labels: { app: 'target' },
         },
         spec: {
@@ -69,7 +69,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
             {
               name: 'echo',
               image: HTTP_ECHO_IMAGE,
-              args: ['-listen=:8080', '-text=hello-from-yormun-namespace'],
+              args: ['-listen=:8080', '-text=hello-from-jin-namespace'],
               ports: [{ containerPort: 8080 }],
             },
           ],
@@ -77,9 +77,9 @@ describe('PodLifecycleService (integración, K3s real)', () => {
       },
     });
     await testK3s.coreApi.createNamespacedService({
-      namespace: YORMUN_NAMESPACE,
+      namespace: JIN_NAMESPACE,
       body: {
-        metadata: { name: 'target-service', namespace: YORMUN_NAMESPACE },
+        metadata: { name: 'target-service', namespace: JIN_NAMESPACE },
         spec: {
           selector: { app: 'target' },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -117,7 +117,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     ).rejects.toBeDefined();
   }, 120_000);
 
-  it('AISLAMIENTO: un pod en agents-sandbox NO puede alcanzar un servicio en yormun', async () => {
+  it('AISLAMIENTO: un pod en agents-sandbox NO puede alcanzar un servicio en jin', async () => {
     // Se construye el pod directamente (sin pasar por PodLifecycleService
     // ni por la whitelist de tools) precisamente para probar la
     // propiedad de infraestructura en sí misma: la NetworkPolicy de
@@ -129,7 +129,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     // por completo en Deno 2.9 (ver el comentario en pod-spec.builder.ts).
     const probeCode = `
       try {
-        const resp = await fetch('http://target-service.yormun.svc.cluster.local', { signal: AbortSignal.timeout(8000) });
+        const resp = await fetch('http://target-service.jin.svc.cluster.local', { signal: AbortSignal.timeout(8000) });
         console.log('REACHED:' + resp.status);
       } catch (e) {
         console.log('BLOCKED:' + e.constructor.name);
@@ -152,7 +152,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
               command: [
                 'deno',
                 'run',
-                '--allow-net=target-service.yormun.svc.cluster.local',
+                '--allow-net=target-service.jin.svc.cluster.local',
                 probeCodeDataUrl,
               ],
             },

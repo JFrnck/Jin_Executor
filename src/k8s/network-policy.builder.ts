@@ -16,7 +16,7 @@ export interface BuildPodNetworkPolicyInput {
 /**
  * NetworkPolicy con alcance a UN solo pod (via podSelector por su
  * run-id). Las políticas de Kubernetes son aditivas: esto SUMA permisos
- * sobre lo que ya conceden las policies de namespace de Yormun_Infra
+ * sobre lo que ya conceden las policies de namespace de Jin_Infra
  * (default-deny + DNS-only en agents-sandbox) — no las reemplaza. Por
  * eso no repite la regla de DNS aquí: ya está cubierta a nivel de
  * namespace y sería redundante.

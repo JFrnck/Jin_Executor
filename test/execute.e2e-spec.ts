@@ -3,7 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { YormunErrorFilter } from '../src/common/filters/yormun-error.filter';
+import { JinErrorFilter } from '../src/common/filters/jin-error.filter';
 import { AppModule } from '../src/app.module';
 
 // Solo ejercita los caminos que retornan/lanzan ANTES de tocar
@@ -24,7 +24,7 @@ describe('POST /execute (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalFilters(new YormunErrorFilter());
+    app.useGlobalFilters(new JinErrorFilter());
     await app.init();
   });
 

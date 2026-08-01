@@ -10,7 +10,7 @@ jobs:
       # ConfigModule valida esto al bootstrapear AppModule (lint/build no
       # necesitan una conexión real a Modal) — ModalService solo se
       # instancia, no se invoca, en lint/test/build/e2e (mismo motivo que
-      # ANTHROPIC_API_KEY en Yormun_Core).
+      # ANTHROPIC_API_KEY en Jin_Core).
       MODAL_TOKEN_ID: ci-not-a-real-token-id
       MODAL_TOKEN_SECRET: ci-not-a-real-token-secret
     steps:

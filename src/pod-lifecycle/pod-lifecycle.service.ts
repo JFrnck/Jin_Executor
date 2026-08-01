@@ -82,7 +82,7 @@ export class PodLifecycleService {
 
     // egressWhitelist ya está vacío en este punto (chequeado arriba), así
     // que no hace falta crear una NetworkPolicy adicional: las policies
-    // de namespace de Yormun_Infra (default-deny + DNS-only) ya cubren
+    // de namespace de Jin_Infra (default-deny + DNS-only) ya cubren
     // exactamente este caso. El mecanismo existe (buildPodNetworkPolicy,
     // k8s.createNetworkPolicy) para cuando exista una tool con egreso
     // real resuelto.

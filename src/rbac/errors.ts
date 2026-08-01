@@ -1,7 +1,7 @@
-import { YormunError } from '../common/errors/yormun-error';
+import { JinError } from '../common/errors/jin-error';
 
 /** Tool fuera de whitelist (BLUEPRINT 4.2). Mapeada a HTTP 403 por el exception filter global. */
-export class ForbiddenToolError extends YormunError {
+export class ForbiddenToolError extends JinError {
   constructor(toolName: string) {
     super(`Tool "${toolName}" no está en la whitelist del Executor.`, {
       code: 'RBAC_TOOL_NOT_WHITELISTED',
@@ -16,7 +16,7 @@ export class ForbiddenToolError extends YormunError {
  * preferible que el request falle ruidosamente a que el egreso se
  * conceda de forma incorrecta o silenciosamente amplia.
  */
-export class UnresolvedEgressWhitelistError extends YormunError {
+export class UnresolvedEgressWhitelistError extends JinError {
   constructor(toolName: string, domains: readonly string[]) {
     super(
       `La tool "${toolName}" declara egressWhitelist [${domains.join(', ')}] pero no existe ` +
