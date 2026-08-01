@@ -28,6 +28,28 @@ export const EnvSchema = z.object({
   MODAL_TOKEN_SECRET: z
     .string()
     .min(1, 'MODAL_TOKEN_SECRET es requerida (token secret de Modal)'),
+  // src/preview-service (Fase 5.5, ADR 0006): guardas duras de pods de
+  // servicio. Pinneada como DENO_IMAGE — multi-arch, verificada ARM64
+  // (VM OCI de este proyecto es Ampere/ARM64).
+  PREVIEW_SERVICE_NODE_IMAGE: z
+    .string()
+    .min(1)
+    .default('docker.io/library/node:22-alpine'),
+  // Default corto a propósito (requisito del owner) — el cap DURO de 24h
+  // se valida también en código (previewServiceMaxTtlSeconds), no solo
+  // acá, para que un env mal configurado no pueda saltárselo.
+  PREVIEW_SERVICE_DEFAULT_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(4 * 60 * 60),
+  PREVIEW_SERVICE_MAX_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(24 * 60 * 60, 'El cap duro de PROMPTS.md §5.5 es 24h')
+    .default(24 * 60 * 60),
+  PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

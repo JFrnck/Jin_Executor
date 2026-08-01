@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModalClient, NotFoundError, type App, type Image } from 'modal';
 import type { ExecutionResult } from '../execute/execution-result';
-import type { ExecutorToolDefinition } from '../rbac/tool-whitelist';
+import type { RunToCompletionToolDefinition } from '../rbac/tool-whitelist';
 import { ModalExecutionError } from './errors';
 
 const MODAL_APP_NAME = 'jin-executor';
@@ -55,7 +55,7 @@ export class ModalService {
   }
 
   async runRemote(
-    tool: ExecutorToolDefinition,
+    tool: RunToCompletionToolDefinition,
     code: string,
     env: Readonly<Record<string, string>>,
   ): Promise<ExecutionResult> {
