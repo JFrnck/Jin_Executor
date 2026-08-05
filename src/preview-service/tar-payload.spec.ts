@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildTarGzBase64 } from './tar-payload';
+import { buildTarGzBase64, isSafeRelativePath } from './tar-payload';
 
 /**
  * Verifica el USTAR armado a mano extrayéndolo con el binario `tar` real
@@ -19,7 +19,12 @@ function extractWithSystemTar(base64: string): Record<string, string> {
     execFileSync('tar', ['xzf', tarGzPath, '-C', dir]);
 
     const result: Record<string, string> = {};
-    for (const name of ['a.txt', 'src/nested/b.ts', 'package.json']) {
+    for (const name of [
+      'a.txt',
+      'src/nested/b.ts',
+      'package.json',
+      'foo..bar.js',
+    ]) {
       try {
         result[name] = readFileSync(join(dir, name), 'utf-8');
       } catch {
@@ -65,5 +70,37 @@ describe('buildTarGzBase64', () => {
   it('lanza si una ruta excede el límite de 99 bytes (sin soporte de prefix largo)', () => {
     const longPath = `${'a'.repeat(100)}.txt`;
     expect(() => buildTarGzBase64({ [longPath]: 'x' })).toThrow(/excede/);
+  });
+
+  it('lanza si una clave de files intenta escapar de /workspace (zip-slip, docs/RECOMENDACIONES.md #10)', () => {
+    expect(() => buildTarGzBase64({ '../evil.js': 'x' })).toThrow(/insegura/);
+    expect(() => buildTarGzBase64({ '/etc/passwd': 'x' })).toThrow(/insegura/);
+    expect(() => buildTarGzBase64({ 'sub/../../escape.js': 'x' })).toThrow(
+      /insegura/,
+    );
+  });
+
+  it('no lanza con una ruta que solo CONTIENE ".." como substring, no como segmento', () => {
+    const base64 = buildTarGzBase64({ 'foo..bar.js': 'contenido válido' });
+    const extracted = extractWithSystemTar(base64);
+    expect(extracted['foo..bar.js']).toBe('contenido válido');
+  });
+});
+
+describe('isSafeRelativePath', () => {
+  it('rechaza rutas absolutas', () => {
+    expect(isSafeRelativePath('/etc/passwd')).toBe(false);
+  });
+
+  it('rechaza cualquier segmento ".." en la ruta', () => {
+    expect(isSafeRelativePath('../evil.js')).toBe(false);
+    expect(isSafeRelativePath('a/../../b.js')).toBe(false);
+    expect(isSafeRelativePath('a/b/..')).toBe(false);
+  });
+
+  it('acepta rutas relativas normales, incluidas las que contienen ".." como parte de un nombre', () => {
+    expect(isSafeRelativePath('src/index.ts')).toBe(true);
+    expect(isSafeRelativePath('foo..bar.js')).toBe(true);
+    expect(isSafeRelativePath('a.b..c/d.ts')).toBe(true);
   });
 });

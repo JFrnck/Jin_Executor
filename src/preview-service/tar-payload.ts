@@ -57,6 +57,18 @@ function padToBlockBoundary(buf: Buffer): Buffer {
 }
 
 /**
+ * Zip-slip (docs/RECOMENDACIONES.md #10): una clave de `files` como
+ * `"../../app/evil.js"` escribiría fuera de `/workspace` al extraerse —
+ * el `hitlLevel: confirm` de `startPreviewService` no lo cubre, el owner
+ * aprueba un `planSummary`, no audita cada clave del mapa. Por segmento,
+ * no por substring: `"foo..bar.js"` es un nombre de archivo legítimo,
+ * `"sub/../../escape.js"` no lo es.
+ */
+export function isSafeRelativePath(path: string): boolean {
+  return !path.startsWith('/') && !path.split('/').includes('..');
+}
+
+/**
  * Empaqueta `files` (ruta relativa -> contenido) a un tar.gz, devuelto
  * como base64 — mismo espíritu que el `data:` URL de `buildPodSpec`
  * (Fase 2.3): un solo string, `args` de Kubernetes nunca pasa por una
@@ -69,6 +81,11 @@ export function buildTarGzBase64(
   const entries: Buffer[] = [];
 
   for (const [path, content] of Object.entries(files)) {
+    if (!isSafeRelativePath(path)) {
+      throw new Error(
+        `tar-payload: la ruta "${path}" es insegura (absoluta o contiene ".."): escaparía de /workspace al extraerse.`,
+      );
+    }
     if (Buffer.byteLength(path, 'utf-8') >= NAME_FIELD_LENGTH) {
       throw new Error(
         `tar-payload: la ruta "${path}" excede ${NAME_FIELD_LENGTH - 1} bytes (sin soporte de prefix largo).`,

@@ -16,8 +16,10 @@ const WORKSPACE_EXTRACT_IMAGE = 'docker.io/library/busybox:1.37.0';
 const PNPM_STORE_PVC_NAME = 'pnpm-store';
 const WORKSPACE_VOLUME = 'workspace';
 const PNPM_STORE_VOLUME = 'pnpm-store';
+const TMP_VOLUME = 'tmp';
 const WORKSPACE_MOUNT_PATH = '/workspace';
 const PNPM_STORE_MOUNT_PATH = '/pnpm-store';
+const TMP_MOUNT_PATH = '/tmp';
 
 export interface BuildServicePodSpecInput {
   readonly serviceId: string;
@@ -77,6 +79,11 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           name: PNPM_STORE_VOLUME,
           persistentVolumeClaim: { claimName: PNPM_STORE_PVC_NAME },
         },
+        // Único directorio adicional que necesita `readOnlyRootFilesystem`
+        // en el container `app` (docs/RECOMENDACIONES.md #10): pnpm ya
+        // redirige su cache a /pnpm-store vía PNPM_HOME/npm_config_cache,
+        // pero herramientas genéricas escriben a /tmp por default.
+        { name: TMP_VOLUME, emptyDir: {} },
       ],
       initContainers: [
         {
@@ -101,6 +108,15 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
             privileged: false,
             capabilities: { drop: ['ALL'] },
           },
+          // docs/RECOMENDACIONES.md #26: sin esto dependía enteramente de
+          // que el LimitRange de agents-sandbox (Jin_Infra, otro repo)
+          // cubriera también init containers. Menor que el límite del
+          // container `app` — extraer un tar.gz es más liviano que correr
+          // el servicio, mismo criterio que pod-spec.builder.ts (runCode).
+          resources: {
+            requests: { cpu: '250m', memory: '256Mi' },
+            limits: { cpu: '500m', memory: '512Mi' },
+          },
         },
       ],
       containers: [
@@ -121,10 +137,17 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           volumeMounts: [
             { name: WORKSPACE_VOLUME, mountPath: WORKSPACE_MOUNT_PATH },
             { name: PNPM_STORE_VOLUME, mountPath: PNPM_STORE_MOUNT_PATH },
+            { name: TMP_VOLUME, mountPath: TMP_MOUNT_PATH },
           ],
           securityContext: {
             allowPrivilegeEscalation: false,
             privileged: false,
+            // docs/RECOMENDACIONES.md #10: el zip-slip de `files` se cierra
+            // en la capa de datos (tar-payload.ts/schema), pero un
+            // filesystem raíz escribible era la segunda mitad del gap —
+            // "hay a dónde escribir". Alineado con pod-spec.builder.ts
+            // (runCode), que ya lo tenía.
+            readOnlyRootFilesystem: true,
             capabilities: { drop: ['ALL'] },
           },
           // Dentro del LimitRange de agents-sandbox (default 512Mi/500m,

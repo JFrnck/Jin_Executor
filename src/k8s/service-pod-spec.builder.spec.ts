@@ -87,6 +87,29 @@ describe('buildServicePodSpec', () => {
       pod.spec?.containers?.[0]?.securityContext?.allowPrivilegeEscalation,
     ).toBe(false);
   });
+
+  it('el container app corre con filesystem raíz de solo lectura (docs/RECOMENDACIONES.md #10), con /tmp escribible aparte', () => {
+    const pod = buildServicePodSpec(baseInput);
+    const container = pod.spec?.containers?.[0];
+
+    expect(container?.securityContext?.readOnlyRootFilesystem).toBe(true);
+    const tmpMount = container?.volumeMounts?.find(
+      (m) => m.mountPath === '/tmp',
+    );
+    expect(tmpMount).toBeDefined();
+    const tmpVolume = pod.spec?.volumes?.find((v) => v.name === tmpMount?.name);
+    expect(tmpVolume?.emptyDir).toBeDefined();
+  });
+
+  it('el init container extract-workspace declara resources propios, no depende del LimitRange de otro repo (docs/RECOMENDACIONES.md #26)', () => {
+    const pod = buildServicePodSpec(baseInput);
+    const resources = pod.spec?.initContainers?.[0]?.resources;
+
+    expect(resources?.requests?.cpu).toBe('250m');
+    expect(resources?.requests?.memory).toBe('256Mi');
+    expect(resources?.limits?.cpu).toBe('500m');
+    expect(resources?.limits?.memory).toBe('512Mi');
+  });
 });
 
 describe('buildService', () => {

@@ -38,6 +38,64 @@
           "execute"
         ]
       }
+    },
+    "/services": {
+      "post": {
+        "operationId": "PreviewServiceController_start",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Servicio creado"
+          },
+          "403": {
+            "description": "Tool fuera de la whitelist del Executor"
+          },
+          "429": {
+            "description": "Límite de servicios concurrentes alcanzado"
+          }
+        },
+        "summary": "Levanta un pod de servicio de larga vida expuesto bajo https://<slug>.jinserver.com (Fase 5.5)",
+        "tags": [
+          "services"
+        ]
+      },
+      "get": {
+        "operationId": "PreviewServiceController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Lista los pods de servicio activos y su TTL restante",
+        "tags": [
+          "services"
+        ]
+      }
+    },
+    "/services/{id}": {
+      "delete": {
+        "operationId": "PreviewServiceController_stop",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Detiene y destruye un pod de servicio activo",
+        "tags": [
+          "services"
+        ]
+      }
     }
   },
   "info": {
