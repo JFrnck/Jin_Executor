@@ -88,18 +88,12 @@ describe('buildServicePodSpec', () => {
     ).toBe(false);
   });
 
-  it('el container app corre con filesystem raíz de solo lectura (docs/RECOMENDACIONES.md #10), con /tmp escribible aparte', () => {
-    const pod = buildServicePodSpec(baseInput);
-    const container = pod.spec?.containers?.[0];
-
-    expect(container?.securityContext?.readOnlyRootFilesystem).toBe(true);
-    const tmpMount = container?.volumeMounts?.find(
-      (m) => m.mountPath === '/tmp',
-    );
-    expect(tmpMount).toBeDefined();
-    const tmpVolume = pod.spec?.volumes?.find((v) => v.name === tmpMount?.name);
-    expect(tmpVolume?.emptyDir).toBeDefined();
-  });
+  // `readOnlyRootFilesystem: true` en el container `app` se probó en este
+  // mismo PR y se revirtió: colgó el smoke test de K3s real sin causa
+  // identificable sin acceso a un clúster real (ver comentario en
+  // service-pod-spec.builder.ts). El zip-slip en sí queda cerrado en la
+  // capa de datos (tar-payload.spec.ts / preview-service-request.schema.spec.ts),
+  // no depende de este endurecimiento adicional.
 
   it('el init container extract-workspace declara resources propios, no depende del LimitRange de otro repo (docs/RECOMENDACIONES.md #26)', () => {
     const pod = buildServicePodSpec(baseInput);
