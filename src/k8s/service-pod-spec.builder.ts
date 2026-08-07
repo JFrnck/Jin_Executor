@@ -101,6 +101,15 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
             privileged: false,
             capabilities: { drop: ['ALL'] },
           },
+          // docs/RECOMENDACIONES.md #26: sin esto dependía enteramente de
+          // que el LimitRange de agents-sandbox (Jin_Infra, otro repo)
+          // cubriera también init containers. Menor que el límite del
+          // container `app` — extraer un tar.gz es más liviano que correr
+          // el servicio, mismo criterio que pod-spec.builder.ts (runCode).
+          resources: {
+            requests: { cpu: '250m', memory: '256Mi' },
+            limits: { cpu: '500m', memory: '512Mi' },
+          },
         },
       ],
       containers: [
@@ -125,6 +134,21 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           securityContext: {
             allowPrivilegeEscalation: false,
             privileged: false,
+            // `readOnlyRootFilesystem: true` (docs/RECOMENDACIONES.md #10,
+            // segunda mitad del hallazgo) se intentó en este mismo PR y se
+            // REVIRTIÓ: el smoke test de K3s real
+            // (preview-service.service.integration.spec.ts, "camino
+            // feliz") colgó 180s sin ningún log intermedio — ni siquiera
+            // el timeout propio de waitUntilPodRunning (60s) llegó a
+            // disparar, lo que apunta a algo más temprano que el pod
+            // nunca sirviendo HTTP, no a la flakiness de red ya
+            // documentada en ADR 0003 (esa es rápida, de segundos). Sin
+            // acceso a un clúster real para diagnosticar la causa exacta,
+            // no se fuerza sin verificar. El zip-slip en sí (la parte
+            // crítica) queda cerrado igual: se corrige en la capa de
+            // datos (tar-payload.ts + schema), no depende de esto.
+            // Pendiente: reintentar con logging más granular en el test
+            // o acceso a un clúster real para inspeccionar el pod.
             capabilities: { drop: ['ALL'] },
           },
           // Dentro del LimitRange de agents-sandbox (default 512Mi/500m,

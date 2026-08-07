@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSafeRelativePath } from './tar-payload';
 
 /** Contrato de POST /services (Fase 5.5, ADR 0006) — mismo criterio que ExecuteRequestSchema: toda entrada HTTP se valida con Zod, en el borde. */
 export const StartPreviewServiceRequestSchema = z.object({
@@ -6,7 +7,17 @@ export const StartPreviewServiceRequestSchema = z.object({
   // Ruta relativa -> contenido. Sin límite de cantidad acá (el límite
   // real de tamaño lo impone el tope práctico de un env var de K8s,
   // ver tar-payload.ts) — Zod solo valida la forma, no un tope de bytes.
-  files: z.record(z.string().min(1), z.string()),
+  // La clave se rechaza acá con la MISMA función que tar-payload.ts usa
+  // internamente (docs/RECOMENDACIONES.md #10, zip-slip): falla rápido
+  // con un 400 en el borde HTTP en vez de esperar a que buildTarGzBase64
+  // la rechace más tarde, sin duplicar la lógica de qué path es seguro.
+  files: z.record(
+    z.string().min(1).refine(isSafeRelativePath, {
+      message:
+        'ruta insegura (absoluta o con ".."): escaparía de /workspace al extraerse',
+    }),
+    z.string(),
+  ),
   command: z.array(z.string().min(1)).min(1),
   port: z.number().int().positive().max(65535),
   // Tope de cordura amplio; el cap duro real (24h) lo aplica

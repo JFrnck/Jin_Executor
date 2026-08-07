@@ -87,6 +87,23 @@ describe('buildServicePodSpec', () => {
       pod.spec?.containers?.[0]?.securityContext?.allowPrivilegeEscalation,
     ).toBe(false);
   });
+
+  // `readOnlyRootFilesystem: true` en el container `app` se probó en este
+  // mismo PR y se revirtió: colgó el smoke test de K3s real sin causa
+  // identificable sin acceso a un clúster real (ver comentario en
+  // service-pod-spec.builder.ts). El zip-slip en sí queda cerrado en la
+  // capa de datos (tar-payload.spec.ts / preview-service-request.schema.spec.ts),
+  // no depende de este endurecimiento adicional.
+
+  it('el init container extract-workspace declara resources propios, no depende del LimitRange de otro repo (docs/RECOMENDACIONES.md #26)', () => {
+    const pod = buildServicePodSpec(baseInput);
+    const resources = pod.spec?.initContainers?.[0]?.resources;
+
+    expect(resources?.requests?.cpu).toBe('250m');
+    expect(resources?.requests?.memory).toBe('256Mi');
+    expect(resources?.limits?.cpu).toBe('500m');
+    expect(resources?.limits?.memory).toBe('512Mi');
+  });
 });
 
 describe('buildService', () => {
