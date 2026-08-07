@@ -33,3 +33,37 @@ jobs:
       - run: pnpm run test:integration
       - run: pnpm run build
       - run: pnpm run generate:contract
+
+  docker:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        # El nodo K3s real es Ampere/ARM64 (BLUEPRINT 3.1) — el runner de
+        # Actions es amd64, así que necesitamos emulación para publicar
+        # una imagen que el clúster pueda correr de verdad.
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          # Prohibido `latest` (Fase 7.1): tag único y determinista por
+          # commit, para que Flux/rollback nunca sean ambiguos.
+          tags: ghcr.io/jfrnck/jin-executor:${{ github.sha }}
