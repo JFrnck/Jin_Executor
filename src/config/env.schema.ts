@@ -50,6 +50,17 @@ export const EnvSchema = z.object({
     .max(24 * 60 * 60, 'El cap duro de PROMPTS.md §5.5 es 24h')
     .default(24 * 60 * 60),
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
+  // src/config/secrets-loader.ts (Fase 8.1, BLUEPRINT §11): ver el
+  // comentario equivalente en Jin_Core/src/config/env.schema.ts --
+  // ninguna de estas 4 es un secreto, y las credenciales de la identidad
+  // de máquina (INFISICAL_CLIENT_ID/SECRET) a propósito no entran acá.
+  INFISICAL_ENABLED: z.enum(['true', 'false']).default('false'),
+  INFISICAL_SITE_URL: z
+    .string()
+    .url()
+    .default('http://infisical.jin.svc.cluster.local:8080'),
+  INFISICAL_PROJECT_ID: z.string().optional(),
+  INFISICAL_ENVIRONMENT: z.string().min(1).default('prod'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
