@@ -152,10 +152,12 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
             capabilities: { drop: ['ALL'] },
           },
           // Dentro del LimitRange de agents-sandbox (default 512Mi/500m,
-          // máx 2Gi/1500m, maxLimitRequestRatio.memory=3) — sin ampliarlo
-          // (restricción explícita de PROMPTS.md §5.5).
+          // máx 1Gi/1000m, maxLimitRequestRatio.memory=3) — sin ampliarlo
+          // (restricción explícita de PROMPTS.md §5.5). requests.memory en
+          // 384Mi, no 256Mi: con el límite en el máximo de 1Gi, 256Mi daba
+          // ratio 4 y el LimitRange rechaza el pod (máximo permitido 3).
           resources: {
-            requests: { cpu: '250m', memory: '256Mi' },
+            requests: { cpu: '250m', memory: '384Mi' },
             limits: { cpu: '1000m', memory: '1Gi' },
           },
         },
