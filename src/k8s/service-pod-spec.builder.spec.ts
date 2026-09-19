@@ -71,11 +71,11 @@ describe('buildServicePodSpec', () => {
     expect(workspaceVolume?.emptyDir).toBeDefined();
   });
 
-  it('respeta el LimitRange de agents-sandbox: request/limit dentro de 512Mi/500m default y 2Gi/1500m máximo', () => {
+  it('respeta el LimitRange de agents-sandbox: request/limit dentro de 512Mi/500m default y 1Gi/1000m máximo, ratio memoria <= 3', () => {
     const pod = buildServicePodSpec(baseInput);
     const resources = pod.spec?.containers?.[0]?.resources;
 
-    expect(resources?.requests?.memory).toBe('256Mi');
+    expect(resources?.requests?.memory).toBe('384Mi');
     expect(resources?.limits?.memory).toBe('1Gi');
     expect(resources?.limits?.cpu).toBe('1000m');
   });

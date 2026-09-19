@@ -85,7 +85,7 @@ export function buildPodSpec(input: BuildPodSpecInput): V1Pod {
           },
           // Alineado con el LimitRange de agents-sandbox (Jin_Infra
           // k8s/base/namespaces/agents-sandbox-limitrange.yaml): default
-          // 512Mi/500m, máximo 2Gi/1500m, límite ≤ 3× el request.
+          // 512Mi/500m, máximo 1Gi/1000m, límite ≤ 3× el request.
           resources: {
             requests: { cpu: '250m', memory: '256Mi' },
             limits: { cpu: '500m', memory: '512Mi' },
