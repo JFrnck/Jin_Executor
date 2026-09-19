@@ -95,6 +95,15 @@ describe('buildServicePodSpec', () => {
   // capa de datos (tar-payload.spec.ts / preview-service-request.schema.spec.ts),
   // no depende de este endurecimiento adicional.
 
+  it('cumple PSA "restricted" de agents-sandbox: seccompProfile RuntimeDefault a nivel de pod (cubre init container y app)', () => {
+    const pod = buildServicePodSpec(baseInput);
+
+    // Sin esto el API server responde 403 "violates PodSecurity restricted".
+    expect(pod.spec?.securityContext?.seccompProfile).toEqual({
+      type: 'RuntimeDefault',
+    });
+  });
+
   it('el init container extract-workspace declara resources propios, no depende del LimitRange de otro repo (docs/RECOMENDACIONES.md #26)', () => {
     const pod = buildServicePodSpec(baseInput);
     const resources = pod.spec?.initContainers?.[0]?.resources;

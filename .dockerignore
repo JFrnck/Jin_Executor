@@ -1,0 +1,16 @@
+# Contexto de build limpio: nada de lo local llega a la imagen.
+# Sin este archivo, `COPY . .` copiaba node_modules de macOS (rompe el build
+# fuera de CI), .env (secretos reales) y data/memory.db (memoria local).
+node_modules
+dist
+coverage
+.git
+.github
+.env
+.env.*
+!.env.example
+data
+logs
+*.log
+.DS_Store
+.idea

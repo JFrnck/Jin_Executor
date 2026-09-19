@@ -141,6 +141,23 @@ describe('buildPodSpec', () => {
     ).toEqual(['ALL']);
   });
 
+  it('cumple PSA "restricted" de agents-sandbox: seccompProfile RuntimeDefault a nivel de pod', () => {
+    const pod = buildPodSpec({
+      runId: 'r1',
+      tool: NO_EGRESS_TOOL,
+      code: 'x',
+      env: {},
+      timeoutSeconds: 30,
+      namespace: 'ns',
+      denoImage: 'img',
+    });
+
+    // Sin esto el API server responde 403 "violates PodSecurity restricted".
+    expect(pod.spec?.securityContext?.seccompProfile).toEqual({
+      type: 'RuntimeDefault',
+    });
+  });
+
   it('propaga las variables de entorno declaradas', () => {
     const pod = buildPodSpec({
       runId: 'r1',

@@ -32,8 +32,49 @@ jobs:
       - run: pnpm run build
       - run: pnpm run generate:contract
 
+  # Control que faltaba (docs/runbooks/STATUS_DEPLOY.md, Jin_Docs): el job
+  # `docker` solo compila y publica, NUNCA ejecutaba la imagen -- por eso
+  # llegó a GHCR una imagen con CMD apuntando a un archivo inexistente.
+  # Acá se construye y se levanta de verdad; si no responde, el CI falla y
+  # `docker` no publica. amd64 nativo a propósito (rápido).
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image (solo para el smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: jin-executor:smoke
+      - name: Arrancar el contenedor y esperar respuesta HTTP
+        run: |
+          docker run -d --name jin-smoke -p 3001:3001 \
+            -e NODE_ENV=production \
+            -e MODAL_TOKEN_ID=ci-not-a-real-id \
+            -e MODAL_TOKEN_SECRET=ci-not-a-real-secret \
+            jin-executor:smoke
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:3001/; then
+              echo
+              echo "smoke OK: el Executor respondió 200"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' jin-smoke)" != "true" ]; then
+              echo "el contenedor murió antes de responder"
+              break
+            fi
+            sleep 2
+          done
+          echo "----- logs del contenedor -----"
+          docker logs jin-smoke
+          exit 1
+
   docker:
-    needs: build
+    needs: [build, container-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

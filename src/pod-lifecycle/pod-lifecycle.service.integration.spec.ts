@@ -145,10 +145,22 @@ describe('PodLifecycleService (integración, K3s real)', () => {
         spec: {
           restartPolicy: 'Never',
           activeDeadlineSeconds: 30,
+          // Este pod lo arma el test (no buildPodSpec), pero vive en
+          // agents-sandbox: tiene que cumplir PSA `restricted` como cualquiera.
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
           containers: [
             {
               name: 'probe',
               image: DENO_IMAGE,
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ['ALL'] },
+              },
               command: [
                 'deno',
                 'run',
