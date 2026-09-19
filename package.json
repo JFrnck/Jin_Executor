@@ -22,6 +22,7 @@
     "generate:contract": "ts-node src/generate-contract.ts"
   },
   "dependencies": {
+    "@infisical/sdk": "5.0.2",
     "@kubernetes/client-node": "1.4.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "4.0.4",
