@@ -67,6 +67,11 @@ export function buildPodSpec(input: BuildPodSpecInput): V1Pod {
         runAsUser: 1000,
         runAsGroup: 1000,
         fsGroup: 1000,
+        // PSA `restricted` (Jin_Infra namespaces.yaml: agents-sandbox) exige
+        // seccompProfile RuntimeDefault|Localhost. Sin esto el API server
+        // rechaza el pod con 403 "violates PodSecurity" -- los tests de K3s no
+        // lo veían porque su namespace no llevaba la etiqueta de producción.
+        seccompProfile: { type: 'RuntimeDefault' },
       },
       containers: [
         {

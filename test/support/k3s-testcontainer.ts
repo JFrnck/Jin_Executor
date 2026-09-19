@@ -139,11 +139,28 @@ export async function startTestK3s(
   const coreApi = kubeConfig.makeApiClient(CoreV1Api);
   const networkingApi = kubeConfig.makeApiClient(NetworkingV1Api);
 
+  // Mismas etiquetas de Pod Security Admission que producción
+  // (Jin_Infra k8s/base/namespaces/namespaces.yaml). Sin ellas este harness
+  // era MÁS permisivo que el clúster real: pods sin seccompProfile pasaban
+  // los tests y habrían sido rechazados en `agents-sandbox` (restricted).
   await coreApi.createNamespace({
-    body: { metadata: { name: AGENTS_SANDBOX_NAMESPACE } },
+    body: {
+      metadata: {
+        name: AGENTS_SANDBOX_NAMESPACE,
+        labels: {
+          'pod-security.kubernetes.io/enforce': 'restricted',
+          'pod-security.kubernetes.io/warn': 'restricted',
+        },
+      },
+    },
   });
   await coreApi.createNamespace({
-    body: { metadata: { name: JIN_NAMESPACE } },
+    body: {
+      metadata: {
+        name: JIN_NAMESPACE,
+        labels: { 'pod-security.kubernetes.io/enforce': 'baseline' },
+      },
+    },
   });
 
   for (const policy of agentsSandboxNetworkPolicies()) {
