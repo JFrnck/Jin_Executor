@@ -17,6 +17,25 @@ import { PodLifecycleService } from './pod-lifecycle.service';
 const DENO_IMAGE = 'docker.io/denoland/deno:distroless-2.9.3';
 const HTTP_ECHO_IMAGE = 'docker.io/hashicorp/http-echo:1.0.0';
 
+const PROBE_TARGET = 'target-service.jin.svc.cluster.local';
+
+/**
+ * Código del probe de aislamiento: intenta alcanzar el servicio del namespace
+ * `jin` y reporta si llegó o si algo lo bloqueó. Se usa tanto en el test real
+ * como en el canario de `beforeAll`.
+ */
+const PROBE_CODE_DATA_URL = `data:application/typescript;base64,${Buffer.from(
+  `
+      try {
+        const resp = await fetch('http://${PROBE_TARGET}', { signal: AbortSignal.timeout(8000) });
+        console.log('REACHED:' + resp.status);
+      } catch (e) {
+        console.log('BLOCKED:' + e.constructor.name);
+      }
+    `,
+  'utf-8',
+).toString('base64')}`;
+
 describe('PodLifecycleService (integración, K3s real)', () => {
   let testK3s: TestK3s;
   let kubeconfigTmpDir: string;
@@ -86,7 +105,81 @@ describe('PodLifecycleService (integración, K3s real)', () => {
         },
       },
     });
+    await waitForNetworkPolicyEnforcement();
   }, 180_000);
+
+  /**
+   * Lanza un pod en agents-sandbox que intenta alcanzar el servicio de `jin`
+   * y devuelve sus logs (`BLOCKED:...` o `REACHED:<status>`).
+   */
+  async function runIsolationProbe(podName: string): Promise<string> {
+    await testK3s.coreApi.createNamespacedPod({
+      namespace: AGENTS_SANDBOX_NAMESPACE,
+      body: {
+        metadata: { name: podName, namespace: AGENTS_SANDBOX_NAMESPACE },
+        spec: {
+          restartPolicy: 'Never',
+          activeDeadlineSeconds: 30,
+          // Este pod lo arma el test (no buildPodSpec), pero vive en
+          // agents-sandbox: tiene que cumplir PSA `restricted` como cualquiera.
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
+          containers: [
+            {
+              name: 'probe',
+              image: DENO_IMAGE,
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ['ALL'] },
+              },
+              command: [
+                'deno',
+                'run',
+                `--allow-net=${PROBE_TARGET}`,
+                PROBE_CODE_DATA_URL,
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const finalPod = await k8s.waitForPod(podName, 30_000);
+    expect(finalPod.status?.phase).toBe('Succeeded');
+    const logs = await k8s.getPodLogs(podName);
+    await k8s.deletePod(podName);
+    return logs;
+  }
+
+  /**
+   * Una NetworkPolicy NO se aplica en el instante en que la API la acepta:
+   * en K3s, kube-router tiene que programar las reglas de iptables después.
+   * Un probe que sale antes de eso ve `REACHED:200` — un falso negativo de un
+   * test de SEGURIDAD, que es la peor clase de test intermitente (enseña a
+   * ignorar fallos reales). Visto en CI el 2026-09-21.
+   *
+   * Por eso la espera vive en el setup y no en el test: acá se repite un
+   * canario idéntico hasta que la política bloquee de verdad, y si nunca
+   * bloquea el setup falla ruidosamente en vez de dejar correr un test que
+   * no prueba nada.
+   */
+  async function waitForNetworkPolicyEnforcement(): Promise<void> {
+    const deadline = Date.now() + 90_000;
+    let lastLogs = '(ningún intento)';
+    for (let attempt = 1; Date.now() < deadline; attempt++) {
+      lastLogs = await runIsolationProbe(`netpol-canary-${attempt}`);
+      if (lastLogs.includes('BLOCKED:')) return;
+    }
+
+    throw new Error(
+      `La NetworkPolicy de ${AGENTS_SANDBOX_NAMESPACE} no bloqueó el tráfico hacia ` +
+        `${PROBE_TARGET} dentro del tiempo permitido. Último probe: ${lastLogs.trim()}`,
+    );
+  }
 
   afterAll(async () => {
     // Si beforeAll falló antes de asignar testK3s, no hay nada que
@@ -127,61 +220,13 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     // prueba aparte en pod-spec.builder.spec.ts). Usa "deno run" con un
     // data: URL, igual que buildPodSpec: "deno eval" ignora --allow-net
     // por completo en Deno 2.9 (ver el comentario en pod-spec.builder.ts).
-    const probeCode = `
-      try {
-        const resp = await fetch('http://target-service.jin.svc.cluster.local', { signal: AbortSignal.timeout(8000) });
-        console.log('REACHED:' + resp.status);
-      } catch (e) {
-        console.log('BLOCKED:' + e.constructor.name);
-      }
-    `;
-    const probeCodeDataUrl = `data:application/typescript;base64,${Buffer.from(probeCode, 'utf-8').toString('base64')}`;
+    //
+    // `beforeAll` ya esperó a que la NetworkPolicy esté REALMENTE aplicada,
+    // así que acá la aserción es de un solo intento y sin reintentos: si
+    // alguna vez ve REACHED, es un agujero de aislamiento de verdad.
+    const logs = await runIsolationProbe('isolation-probe');
 
-    const podName = 'isolation-probe';
-    await testK3s.coreApi.createNamespacedPod({
-      namespace: AGENTS_SANDBOX_NAMESPACE,
-      body: {
-        metadata: { name: podName, namespace: AGENTS_SANDBOX_NAMESPACE },
-        spec: {
-          restartPolicy: 'Never',
-          activeDeadlineSeconds: 30,
-          // Este pod lo arma el test (no buildPodSpec), pero vive en
-          // agents-sandbox: tiene que cumplir PSA `restricted` como cualquiera.
-          securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
-            runAsGroup: 1000,
-            seccompProfile: { type: 'RuntimeDefault' },
-          },
-          containers: [
-            {
-              name: 'probe',
-              image: DENO_IMAGE,
-              securityContext: {
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
-              },
-              command: [
-                'deno',
-                'run',
-                '--allow-net=target-service.jin.svc.cluster.local',
-                probeCodeDataUrl,
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    const finalPod = await k8s.waitForPod(podName, 30_000);
-    const logs = await k8s.getPodLogs(podName);
-
-    expect(finalPod.status?.phase).toBe('Succeeded');
-    // La conexión NUNCA debe llegar a destino — debe fallar por la
-    // NetworkPolicy (timeout/refused), nunca ver un status HTTP real.
     expect(logs).toContain('BLOCKED:');
     expect(logs).not.toContain('REACHED:');
-
-    await k8s.deletePod(podName);
   }, 60_000);
 });
