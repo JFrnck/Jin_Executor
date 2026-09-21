@@ -25,3 +25,10 @@ pnpm-debug.log*
 
 # Environment
 .env
+
+# Duplicados de sincronización de iCloud Drive (Escritorio/Documentos activado):
+# copias obsoletas "archivo 2.ext" que aparecen sin avisar. Rompieron un
+# `nest build` (specs viejos fuera de `src/`) y un `git add -A` los habría
+# commiteado. Se ignoran; borralos con: find . -name "* [0-9].*" -delete
+* [0-9].*
+* [0-9]
