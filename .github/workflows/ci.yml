@@ -101,19 +101,15 @@ jobs:
   docker:
     needs: [build, container-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # Runner ARM64 NATIVO (GA para repos públicos desde 2025-08): el nodo K3s es
+    # Ampere/arm64, y emular con QEMU hacía que este job colgara -- 2 cuelgues de 6 h
+    # el 2026-09-19 y 2 más el 2026-09-21 (57 min y 25 min) frente a ~5 min normales.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        # El nodo K3s real es Ampere/ARM64 (BLUEPRINT 3.1) — el runner de
-        # Actions es amd64, así que necesitamos emulación para publicar
-        # una imagen que el clúster pueda correr de verdad.
-        with:
-          platforms: arm64
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
