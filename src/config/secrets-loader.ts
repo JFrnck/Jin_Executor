@@ -32,9 +32,17 @@ export async function loadSecrets(
   const projectId = requireVar(env, 'INFISICAL_PROJECT_ID');
   const environment = env.INFISICAL_ENVIRONMENT ?? 'prod';
 
-  const client = new InfisicalSDK(
-    env.INFISICAL_SITE_URL ? { siteUrl: env.INFISICAL_SITE_URL } : {},
-  );
+  // REQUERIDA, sin fallback: si no está, el SDK apunta por defecto a
+  // `app.infisical.com` — la nube de un TERCERO — y le manda estas
+  // credenciales. Pasó en el primer despliegue real (2026-09-21): el
+  // Deployment no la definía, el default de Zod no aplica acá (esto corre
+  // antes de que Nest exista) y ambos servicios mandaron su clientId/secret
+  // a Infisical Cloud, que respondió 401. Jin es self-hosted (BLUEPRINT §11):
+  // una configuración incompleta tiene que fallar ruidosamente, nunca
+  // filtrar credenciales a un servicio externo por omisión.
+  const siteUrl = requireVar(env, 'INFISICAL_SITE_URL');
+
+  const client = new InfisicalSDK({ siteUrl });
   await client.auth().universalAuth.login({ clientId, clientSecret });
   const { secrets } = await client
     .secrets()
