@@ -118,6 +118,7 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     if (!clusterIp) throw new Error('target-service se creó sin ClusterIP');
     targetIp = clusterIp;
 
+    await waitForTargetReady();
     await detectNetworkPolicyEnforcement();
   }, 180_000);
 
@@ -166,6 +167,29 @@ describe('PodLifecycleService (integración, K3s real)', () => {
     const logs = await k8s.getPodLogs(podName);
     await k8s.deletePod(podName);
     return logs;
+  }
+
+  /**
+   * El pod destino tiene que estar ACEPTANDO conexiones antes de medir nada.
+   * Si no, un probe falla por "todavía no hay nadie escuchando" y eso es
+   * indistinguible de "la NetworkPolicy lo bloqueó": otro falso `BLOCKED:`
+   * que hacía pasar el test sin probar la propiedad (CI, 2026-09-21).
+   */
+  async function waitForTargetReady(): Promise<void> {
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      const pod = await testK3s.coreApi.readNamespacedPod({
+        name: 'target-http-echo',
+        namespace: JIN_NAMESPACE,
+      });
+      const ready = pod.status?.conditions?.some(
+        (c) => c.type === 'Ready' && c.status === 'True',
+      );
+      if (ready) return;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+
+    throw new Error('target-http-echo nunca llegó a Ready');
   }
 
   /**
