@@ -72,6 +72,31 @@ jobs:
           echo "----- logs del contenedor -----"
           docker logs jin-smoke
           exit 1
+      - name: Regresión Fase 8.1 -- los secretos de Infisical se cargan ANTES de validar el entorno
+        run: |
+          # Con INFISICAL_ENABLED=true y un Infisical inalcanzable, el proceso debe
+          # fallar en el LOGIN a Infisical (loadSecrets), no en la validación del
+          # entorno. Si `validateEnv()` corre antes que `loadSecrets()` (import
+          # estático de AppModule: ConfigModule.forRoot se ejecuta al importar), la
+          # imagen es inservible en producción y ningún otro test lo veía porque
+          # todos pasan el entorno completo por variables.
+          set +e
+          out="$(docker run --rm \
+            -e NODE_ENV=production \
+            -e INFISICAL_ENABLED=true \
+            -e INFISICAL_CLIENT_ID=ci -e INFISICAL_CLIENT_SECRET=ci \
+            -e INFISICAL_PROJECT_ID=ci -e INFISICAL_SITE_URL=http://127.0.0.1:9 \
+            jin-executor:smoke 2>&1)"
+          echo "$out" | head -20
+          if echo "$out" | grep -q "Configuración de entorno inválida"; then
+            echo "FALLO: validateEnv() corrió antes de loadSecrets()."
+            exit 1
+          fi
+          if ! echo "$out" | grep -q "InfisicalSDKError"; then
+            echo "FALLO: el proceso no llegó a intentar hablar con Infisical."
+            exit 1
+          fi
+          echo "OK: loadSecrets() corre antes de validateEnv()."
 
   docker:
     needs: [build, container-smoke]
