@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import type { V1Pod } from '@kubernetes/client-node';
 import { K8sService, type PodExecution } from '../k8s/k8s.service';
 import { collectExec } from '../k8s/pod-exec';
+import { podProxyPrefix, undoApiServerRewrite } from '../k8s/pod-proxy';
 import type { PodProxyResponse } from '../k8s/k8s.service';
 import {
   JINSERVER_TLS_SECRET_NAME,
@@ -466,11 +467,14 @@ export class TerminalSessionService {
     },
   ): Promise<PodProxyResponse> {
     await this.requireRunningPod(terminalId);
+    const podName = terminalPodNameForId(terminalId);
     try {
-      return await this.k8s.proxyToPod(
-        terminalPodNameForId(terminalId),
-        port,
-        request,
+      const response = await this.k8s.proxyToPod(podName, port, request);
+      // El API server reescribe los enlaces del HTML: se deshace para que la
+      // página del owner funcione como si hablara directo con su servidor.
+      return await undoApiServerRewrite(
+        response,
+        podProxyPrefix(this.k8s.namespace, podName, port),
       );
     } catch (error) {
       throw new TerminalProxyError(

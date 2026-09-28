@@ -218,6 +218,11 @@ describe('TerminalSessionService (integración, K3s real)', () => {
             let body = '';
             req.on('data', (c) => (body += c));
             req.on('end', () => {
+              if (req.url === '/pagina') {
+                res.setHeader('content-type', 'text/html');
+                res.end('<script type="module" src="/@vite/client"></script><link href="/favicon.svg"><a href="/">inicio</a>');
+                return;
+              }
               res.setHeader('content-type', 'application/json');
               res.end(JSON.stringify({ method: req.method, url: req.url, host: req.headers.host, body, cookie: req.headers.cookie ?? null, auth: req.headers.authorization ?? null }));
             });
@@ -263,6 +268,18 @@ describe('TerminalSessionService (integración, K3s real)', () => {
         cookie: null,
         auth: null,
       });
+
+      // El API server reescribe los enlaces del HTML; el Executor lo deshace.
+      const page = await terminal.proxy(info.id, 5173, {
+        method: 'GET',
+        path: '/pagina',
+        headers: { host: 'localhost:5173', 'accept-encoding': 'identity' },
+      });
+      const pageChunks: Buffer[] = [];
+      for await (const chunk of page.body) pageChunks.push(chunk as Buffer);
+      expect(Buffer.concat(pageChunks).toString('utf8')).toBe(
+        '<script type="module" src="/@vite/client"></script><link href="/favicon.svg"><a href="/">inicio</a>',
+      );
 
       const post = await terminal.proxy(info.id, 5173, {
         method: 'POST',
