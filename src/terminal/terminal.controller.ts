@@ -218,6 +218,8 @@ export class TerminalController {
     });
 
     res.status(upstream.status);
+    // Marca lo que viene del servidor del owner: un 404 de su app no es un 404 de la sesión.
+    res.setHeader('x-jin-proxied', '1');
     for (const [name, value] of Object.entries(upstream.headers)) {
       if (value !== undefined && RESPONSE_HEADERS.has(name.toLowerCase())) {
         res.setHeader(name, value);
