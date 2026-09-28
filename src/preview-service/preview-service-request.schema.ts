@@ -28,6 +28,8 @@ export const StartPreviewServiceRequestSchema = z.object({
     .positive()
     .max(7 * 24 * 60 * 60),
   slugHint: z.string().optional(),
+  // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
+  requestId: z.string().uuid().optional(),
 });
 
 export type StartPreviewServiceRequest = z.infer<

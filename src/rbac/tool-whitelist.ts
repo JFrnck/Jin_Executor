@@ -85,6 +85,36 @@ const EXECUTOR_TOOL_REGISTRY: readonly ExecutorToolDefinition[] = Object.freeze(
       egressWhitelist: Object.freeze([]),
       isServiceTool: true,
     }),
+    // ADR 0016: sesiones de terminal del owner. Egreso vacío acá a propósito:
+    // la única salida (el proxy de npm del clúster) es una NetworkPolicy por
+    // sesión con destino fijo, no un dominio de la whitelist. Jin_Core no las
+    // expone al modelo: son tools virtuales que solo inicia el owner.
+    Object.freeze({
+      name: 'startTerminalSession',
+      description:
+        'Levanta un pod de terminal aislado (solo sale al proxy de npm del clúster).',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
+    Object.freeze({
+      name: 'runTerminalCommand',
+      description: 'Ejecuta un comando dentro de una sesión de terminal.',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
+    Object.freeze({
+      name: 'exposeTerminalSession',
+      description:
+        'Publica un directorio de la sesión (build) bajo https://<slug>.jinserver.com.',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
+    Object.freeze({
+      name: 'stopTerminalSession',
+      description: 'Cierra una sesión de terminal y destruye su pod.',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
   ] satisfies ExecutorToolDefinition[],
 );
 

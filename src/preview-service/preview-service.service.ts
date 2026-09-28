@@ -11,6 +11,7 @@ import {
 import { buildServiceIngressNetworkPolicy } from '../k8s/network-policy.builder';
 import {
   JINSERVER_TLS_SECRET_NAME,
+  REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
   SERVICE_SLUG_ANNOTATION,
@@ -21,7 +22,14 @@ import {
 import { ForbiddenToolError } from '../rbac/errors';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
 import { isRunToCompletionTool } from '../rbac/tool-whitelist';
-import { PreviewServiceLimitError } from './errors';
+import {
+  PreviewServiceExportError,
+  PreviewServiceLimitError,
+  PreviewServiceNotFoundError,
+} from './errors';
+import { collectExec } from '../k8s/pod-exec';
+import { EXPORT_FILES_SCRIPT } from '../terminal/terminal-scripts';
+import type { TerminalExportResult } from '../terminal/terminal.types';
 import type { StartPreviewServiceRequest } from './preview-service-request.schema';
 import { generateSlug } from './slug';
 import { buildTarGzBase64 } from './tar-payload';
@@ -40,12 +48,14 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
     pod.metadata?.annotations?.[SERVICE_EXPIRES_AT_ANNOTATION] ??
     new Date(0).toISOString();
   const expired = new Date(expiresAt).getTime() <= Date.now();
+  const requestId = pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION];
   return {
     id: serviceId,
     slug,
     url: `https://${slug}.jinserver.com`,
     status: expired ? 'expired' : 'running',
     expiresAt,
+    ...(requestId ? { requestId } : {}),
   };
 }
 
@@ -126,6 +136,7 @@ export class PreviewServiceLifecycleService {
       command: request.command,
       port: request.port,
       expiresAt,
+      requestId: request.requestId,
     });
     const networkPolicy = buildServiceIngressNetworkPolicy({
       serviceId,
@@ -170,6 +181,47 @@ export class PreviewServiceLifecycleService {
     await this.k8s.deleteService(podName);
     await this.k8s.deleteNetworkPolicy(ingressNetworkPolicyName(serviceId));
     await this.k8s.deletePod(podName);
+  }
+
+  /**
+   * Archivos de texto del espacio de trabajo de un pod de servicio, para que el
+   * owner los traiga al editor y los edite (o audite). Lee del pod vivo con el
+   * mismo programa fijo que la terminal: nunca sale del espacio de trabajo,
+   * omite `node_modules`, `.git` y `.jin` (el servidor de Jin), y deja fuera
+   * binarios y lo que pase los topes de Publicar. El pod corre código que
+   * escribió un agente: lo que devuelve es un dato, no de confianza.
+   */
+  async exportFiles(
+    serviceId: string,
+    dir: string,
+  ): Promise<TerminalExportResult> {
+    const pods = await this.listActivePods();
+    const pod = pods.find(
+      (candidate) =>
+        candidate.metadata?.labels?.[SERVICE_ID_LABEL] === serviceId,
+    );
+    if (!pod?.metadata?.name || podToInfo(pod).status !== 'running') {
+      throw new PreviewServiceNotFoundError(serviceId);
+    }
+    const result = await collectExec(this.k8s, pod.metadata.name, 'app', [
+      'node',
+      '-e',
+      EXPORT_FILES_SCRIPT,
+      dir,
+    ]);
+    if (result.code !== 0) {
+      throw new PreviewServiceExportError(
+        `No se pudieron leer los archivos del pod: ${result.stderr.slice(0, 300)}`,
+      );
+    }
+    try {
+      return JSON.parse(result.stdout) as TerminalExportResult;
+    } catch (cause) {
+      throw new PreviewServiceExportError(
+        'El pod devolvió una lista de archivos ilegible.',
+        cause,
+      );
+    }
   }
 
   async list(): Promise<PreviewServiceInfo[]> {

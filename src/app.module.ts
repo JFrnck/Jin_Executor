@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { ConfigModule } from './config';
 import { ExecuteModule } from './execute/execute.module';
 import { PreviewServiceModule } from './preview-service/preview-service.module';
+import { TerminalModule } from './terminal/terminal.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { PreviewServiceModule } from './preview-service/preview-service.module';
     ScheduleModule.forRoot(),
     ExecuteModule,
     PreviewServiceModule,
+    TerminalModule,
   ],
   controllers: [AppController],
   providers: [AppService],

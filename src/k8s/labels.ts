@@ -22,3 +22,21 @@ export const JINSERVER_TLS_SECRET_NAME = 'wildcard-jinserver-com-tls';
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }
+
+// ADR 0016 (sesiones de terminal): pod de larga vida donde el owner corre
+// comandos (npm, vite). Comparte SERVICE_ID_LABEL con el Service/IngressRoute
+// que se crean si publica el build, pero su tipo es distinto: las listas de
+// previews (`jin.io/type=service`) no lo ven.
+export const TERMINAL_TYPE_VALUE = 'terminal';
+export const TERMINAL_CONTAINER_NAME = 'main';
+
+export function terminalPodNameForId(terminalId: string): string {
+  return `agent-terminal-${terminalId}`;
+}
+
+/**
+ * Annotation con el `requestId` de la aprobación (HITL) que originó el pod.
+ * Lo pone Jin_Core, que es quien sabe de dónde viene: sirve para enlazar el
+ * pod con su fila del audit. Ausente en pods anteriores a este campo.
+ */
+export const REQUEST_ID_ANNOTATION = 'jin.io/request-id';

@@ -9,3 +9,22 @@ export class PreviewServiceLimitError extends JinError {
     );
   }
 }
+
+export class PreviewServiceNotFoundError extends JinError {
+  constructor(serviceId: string) {
+    super(`No existe el pod de servicio ${serviceId} (¿venció su TTL?).`, {
+      code: 'PREVIEW_SERVICE_NOT_FOUND',
+      httpStatus: 404,
+    });
+  }
+}
+
+export class PreviewServiceExportError extends JinError {
+  constructor(message: string, cause?: unknown) {
+    super(message, {
+      code: 'PREVIEW_SERVICE_EXPORT_FAILED',
+      httpStatus: 502,
+      cause,
+    });
+  }
+}

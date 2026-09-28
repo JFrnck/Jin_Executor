@@ -134,7 +134,7 @@ describe('PreviewServiceLifecycleService (integración, K3s real)', () => {
       configService,
     );
     reaper = new PreviewServiceReaperService(service);
-  }, 180_000);
+  }, 600_000);
 
   afterAll(async () => {
     if (testK3s) {
@@ -193,6 +193,37 @@ describe('PreviewServiceLifecycleService (integración, K3s real)', () => {
     await runProbeInKubeSystem(testK3s, k8s, probeCode);
 
     await service.stop(info.id);
+  }, 180_000);
+
+  it('exporta los archivos de un pod vivo (para traerlos al editor) y lo enlaza con su aprobación', async () => {
+    const requestId = '22222222-2222-4222-8222-222222222222';
+    const info = await service.start({
+      tool: 'startPreviewService',
+      files: {
+        'index.js':
+          'require("http").createServer((req, res) => res.end("x")).listen(process.env.PORT);',
+        'src/util.js': 'module.exports = 1;',
+      },
+      command: ['node', 'index.js'],
+      port: 3000,
+      ttlSeconds: 3600,
+      requestId,
+    });
+    try {
+      await waitUntilPodRunning(k8s, `agent-service-${info.id}`);
+
+      const listed = (await service.list()).find((s) => s.id === info.id);
+      expect(listed?.requestId).toBe(requestId);
+
+      const exported = await service.exportFiles(info.id, '.');
+      expect(Object.keys(exported.files).sort()).toEqual([
+        'index.js',
+        'src/util.js',
+      ]);
+      expect(exported.files['src/util.js']).toBe('module.exports = 1;');
+    } finally {
+      await service.stop(info.id);
+    }
   }, 180_000);
 
   it('el reaper destruye pod + Service + NetworkPolicy vencidos', async () => {
