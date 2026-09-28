@@ -96,6 +96,152 @@
           "services"
         ]
       }
+    },
+    "/terminal/sessions": {
+      "post": {
+        "operationId": "TerminalController_start",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Abre una sesión de terminal aislada (ADR 0016)",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "get": {
+        "operationId": "TerminalController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Sesiones de terminal activas",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}": {
+      "delete": {
+        "operationId": "TerminalController_stop",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Cierra una sesión y destruye su pod",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/exec": {
+      "post": {
+        "operationId": "TerminalController_exec",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Ejecuta un comando en la sesión (salida en streaming NDJSON)",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/files": {
+      "get": {
+        "operationId": "TerminalController_exportFiles",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Archivos de texto del espacio de trabajo (para traerlos al editor)",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "put": {
+        "operationId": "TerminalController_importFiles",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Copia archivos del editor al espacio de trabajo",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/expose": {
+      "post": {
+        "operationId": "TerminalController_expose",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Publica un directorio de la sesión bajo https://<slug>.jinserver.com",
+        "tags": [
+          "terminal"
+        ]
+      }
     }
   },
   "info": {

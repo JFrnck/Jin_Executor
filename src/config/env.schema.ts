@@ -50,6 +50,32 @@ export const EnvSchema = z.object({
     .max(24 * 60 * 60, 'El cap duro de PROMPTS.md §5.5 es 24h')
     .default(24 * 60 * 60),
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
+  // src/terminal (ADR 0016): sesiones de terminal del owner. La única salida
+  // de red de esos pods es el proxy de npm del clúster (Verdaccio).
+  TERMINAL_NODE_IMAGE: z
+    .string()
+    .min(1)
+    .default('docker.io/library/node:22-alpine'),
+  TERMINAL_NPM_REGISTRY_URL: z
+    .string()
+    .url()
+    .default('http://verdaccio.registry-proxy.svc.cluster.local:4873'),
+  // Namespace y label del pod del proxy: la NetworkPolicy de cada sesión
+  // solo abre la salida hacia ese pod.
+  TERMINAL_REGISTRY_NAMESPACE: z.string().min(1).default('registry-proxy'),
+  TERMINAL_DEFAULT_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(60 * 60),
+  TERMINAL_MAX_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(4 * 60 * 60, 'El cap duro de una sesión de terminal es 4h (ADR 0016)')
+    .default(4 * 60 * 60),
+  // Una sola a la vez: la cuota de agents-sandbox y la CPU de la VM no dan más.
+  TERMINAL_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
   // src/config/secrets-loader.ts (Fase 8.1, BLUEPRINT §11): ver el
   // comentario equivalente en Jin_Core/src/config/env.schema.ts --
   // ninguna de estas 4 es un secreto, y las credenciales de la identidad

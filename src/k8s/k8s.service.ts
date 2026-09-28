@@ -1,12 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Readable, Writable } from 'node:stream';
 import {
   CoreV1Api,
   CustomObjectsApi,
+  Exec,
   KubeConfig,
   NetworkingV1Api,
   type V1NetworkPolicy,
   type V1Pod,
   type V1Service,
+  type V1Status,
 } from '@kubernetes/client-node';
 import { ConfigService } from '@nestjs/config';
 import { PodTimeoutError } from './errors';
@@ -23,6 +26,39 @@ const POD_POLL_INTERVAL_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Código de salida que informa Kubernetes en el `V1Status` final de un `exec`. */
+export function exitCodeFromStatus(status: V1Status): number {
+  if (status.status === 'Success') return 0;
+  const cause = status.details?.causes?.find(
+    (candidate) => candidate.reason === 'ExitCode',
+  );
+  const parsed = Number(cause?.message);
+  return Number.isInteger(parsed) ? parsed : -1;
+}
+
+export interface PodExecOptions {
+  readonly container: string;
+  readonly command: readonly string[];
+  /** Si se pasa, el proceso lo recibe por stdin y ve EOF al terminar. */
+  readonly stdin?: Buffer;
+  readonly onStdout: (chunk: Buffer) => void;
+  readonly onStderr: (chunk: Buffer) => void;
+}
+
+/** Lo mínimo que se usa del WebSocket de `Exec` (sus tipos vienen de `ws`, sin tipar acá). */
+interface ExecSocket {
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  on(event: 'close', listener: () => void): unknown;
+  close(): void;
+}
+
+export interface PodExecution {
+  /** Resuelve con el código de salida; rechaza si la conexión se cae antes. */
+  readonly exitCode: Promise<number>;
+  /** Corta la conexión (el proceso puede seguir hasta su propio timeout). */
+  abort(): void;
 }
 
 /**
@@ -42,6 +78,7 @@ export class K8sService {
   private readonly coreApi: CoreV1Api;
   private readonly networkingApi: NetworkingV1Api;
   private readonly customObjectsApi: CustomObjectsApi;
+  private readonly kubeConfig: KubeConfig;
   readonly namespace: string;
 
   // Tipado como la clase real `ConfigService` (no el alias `AppConfigService`
@@ -61,6 +98,7 @@ export class K8sService {
       // Producción (BLUEPRINT 4.2): ServiceAccount montado del pod.
       kubeConfig.loadFromCluster();
     }
+    this.kubeConfig = kubeConfig;
     this.coreApi = kubeConfig.makeApiClient(CoreV1Api);
     this.networkingApi = kubeConfig.makeApiClient(NetworkingV1Api);
     this.customObjectsApi = kubeConfig.makeApiClient(CustomObjectsApi);
@@ -119,6 +157,98 @@ export class K8sService {
     }
 
     throw new PodTimeoutError(name, timeoutMs);
+  }
+
+  /** Poll hasta que el pod esté `Running`; falla rápido si terminó o si vence el plazo. */
+  async waitForPodRunning(name: string, timeoutMs: number): Promise<V1Pod> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const pod = await this.readPod(name);
+      const phase = pod.status?.phase;
+      if (phase === 'Running') {
+        return pod;
+      }
+      if (phase === 'Succeeded' || phase === 'Failed') {
+        throw new Error(`El pod ${name} terminó (${phase}) antes de arrancar.`);
+      }
+      await sleep(POD_POLL_INTERVAL_MS);
+    }
+
+    throw new PodTimeoutError(name, timeoutMs);
+  }
+
+  /**
+   * Ejecuta un comando dentro de un pod que ya corre (subrecurso `pods/exec`,
+   * ADR 0016). Devuelve enseguida un handle: la salida llega por los
+   * callbacks y el código de salida por `exitCode`.
+   */
+  async execInPod(
+    name: string,
+    options: PodExecOptions,
+  ): Promise<PodExecution> {
+    const stdout = new Writable({
+      write: (chunk: Buffer, _encoding, done) => {
+        options.onStdout(chunk);
+        done();
+      },
+    });
+    const stderr = new Writable({
+      write: (chunk: Buffer, _encoding, done) => {
+        options.onStderr(chunk);
+        done();
+      },
+    });
+    const stdin = options.stdin ? Readable.from([options.stdin]) : null;
+
+    let settle: {
+      resolve: (code: number) => void;
+      reject: (error: Error) => void;
+    };
+    const exitCode = new Promise<number>((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    // Un rechazo que nadie espera (abort) no debe tumbar el proceso.
+    exitCode.catch(() => undefined);
+
+    const socket = (await new Exec(this.kubeConfig).exec(
+      this.namespace,
+      name,
+      options.container,
+      [...options.command],
+      stdout,
+      stderr,
+      stdin,
+      false,
+      (status) => settle.resolve(exitCodeFromStatus(status)),
+    )) as unknown as ExecSocket;
+    socket.on('error', (error: Error) => settle.reject(error));
+    socket.on('close', () =>
+      settle.reject(
+        new Error(
+          'La conexión con el pod se cerró antes de terminar el comando.',
+        ),
+      ),
+    );
+
+    return {
+      exitCode,
+      abort: () => {
+        try {
+          socket.close();
+        } catch {
+          // ya estaba cerrado
+        }
+      },
+    };
+  }
+
+  async listServicesByLabel(labelSelector: string): Promise<V1Service[]> {
+    const result = await this.coreApi.listNamespacedService({
+      namespace: this.namespace,
+      labelSelector,
+    });
+    return result.items;
   }
 
   async createNetworkPolicy(policy: V1NetworkPolicy): Promise<void> {
