@@ -33,3 +33,10 @@ export const TERMINAL_CONTAINER_NAME = 'main';
 export function terminalPodNameForId(terminalId: string): string {
   return `agent-terminal-${terminalId}`;
 }
+
+/**
+ * Annotation con el `requestId` de la aprobación (HITL) que originó el pod.
+ * Lo pone Jin_Core, que es quien sabe de dónde viene: sirve para enlazar el
+ * pod con su fila del audit. Ausente en pods anteriores a este campo.
+ */
+export const REQUEST_ID_ANNOTATION = 'jin.io/request-id';

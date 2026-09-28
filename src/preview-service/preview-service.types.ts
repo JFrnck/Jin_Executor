@@ -7,4 +7,6 @@ export interface PreviewServiceInfo {
   readonly url: string;
   readonly status: PreviewServiceStatus;
   readonly expiresAt: string;
+  /** Aprobación que lo originó; ausente en pods anteriores a este campo. */
+  readonly requestId?: string;
 }

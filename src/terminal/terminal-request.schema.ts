@@ -36,6 +36,8 @@ export const StartTerminalRequestSchema = z.object({
     .int()
     .positive()
     .max(24 * 60 * 60),
+  /** Aprobación (HITL) que abrió la sesión; lo manda Jin_Core para enlazarla con el audit. */
+  requestId: z.string().uuid().optional(),
 });
 export type StartTerminalRequest = z.infer<typeof StartTerminalRequestSchema>;
 

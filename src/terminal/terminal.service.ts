@@ -4,8 +4,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { V1Pod } from '@kubernetes/client-node';
 import { K8sService, type PodExecution } from '../k8s/k8s.service';
+import { collectExec } from '../k8s/pod-exec';
 import {
   JINSERVER_TLS_SECRET_NAME,
+  REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
   SERVICE_SLUG_ANNOTATION,
@@ -61,10 +63,8 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 /** Tiempo para que el pod arranque (la primera vez hay que bajar la imagen). */
 const START_TIMEOUT_MS = 120_000;
 /** Tiempo para las operaciones internas (subir, exportar, arrancar el servidor). */
-const HELPER_TIMEOUT_MS = 60_000;
 const SERVER_CHECK_ATTEMPTS = 6;
 const SERVER_CHECK_INTERVAL_MS = 300;
-const HELPER_OUTPUT_LIMIT = 2 * 1024 * 1024;
 
 function isNotFound(error: unknown): boolean {
   return (
@@ -180,6 +180,7 @@ export class TerminalSessionService {
           image: this.image,
           npmRegistryUrl: this.registryUrl,
           expiresAt,
+          requestId: request.requestId,
         }),
       );
       await this.k8s.createNetworkPolicy(
@@ -204,6 +205,7 @@ export class TerminalSessionService {
       id: terminalId,
       status: 'running',
       expiresAt: expiresAt.toISOString(),
+      requestId: request.requestId ?? null,
       exposure: null,
     };
   }
@@ -222,6 +224,7 @@ export class TerminalSessionService {
         expiresAt:
           pod.metadata?.annotations?.[SERVICE_EXPIRES_AT_ANNOTATION] ??
           new Date(0).toISOString(),
+        requestId: pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION] ?? null,
         exposure: exposures.get(id) ?? null,
       };
     });
@@ -525,37 +528,14 @@ export class TerminalSessionService {
   }
 
   /** Corre un comando corto y junta su salida (subir, exportar, arrancar el servidor). */
-  private async collect(
+  private collect(
     podName: string,
     command: readonly string[],
     stdin?: Buffer,
   ): Promise<Collected> {
-    let stdout = '';
-    let stderr = '';
-    const decoders = {
-      out: new StringDecoder('utf8'),
-      err: new StringDecoder('utf8'),
-    };
-    const execution = await this.k8s.execInPod(podName, {
-      container: TERMINAL_CONTAINER_NAME,
-      command,
+    return collectExec(this.k8s, podName, TERMINAL_CONTAINER_NAME, command, {
       ...(stdin ? { stdin } : {}),
-      onStdout: (chunk) => {
-        if (stdout.length < HELPER_OUTPUT_LIMIT)
-          stdout += decoders.out.write(chunk);
-      },
-      onStderr: (chunk) => {
-        if (stderr.length < HELPER_OUTPUT_LIMIT)
-          stderr += decoders.err.write(chunk);
-      },
     });
-    const watchdog = setTimeout(() => execution.abort(), HELPER_TIMEOUT_MS);
-    try {
-      const code = await execution.exitCode;
-      return { code, stdout, stderr };
-    } finally {
-      clearTimeout(watchdog);
-    }
   }
 
   private async writeFiles(

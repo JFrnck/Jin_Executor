@@ -5,10 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   EXPORT_FILES_SCRIPT,
@@ -137,6 +138,18 @@ describe('EXPORT_FILES_SCRIPT', () => {
     expect(
       result.skipped.some((s) => s.reason === 'supera 256 KB en total'),
     ).toBe(true);
+  });
+
+  it('un enlace simbólico no se sigue: no puede sacar archivos de fuera del espacio de trabajo', () => {
+    const ws = tmp();
+    const outside = join(tmp(), 'secreto.txt');
+    writeFileSync(outside, 'contenido-secreto');
+    symlinkSync(outside, join(ws, 'enlace.txt'));
+    symlinkSync(dirname(outside), join(ws, 'carpeta-enlace'));
+    writeFileSync(join(ws, 'ok.txt'), 'ok');
+    const { files } = runExport(ws);
+    expect(Object.keys(files)).toEqual(['ok.txt']);
+    expect(JSON.stringify(files)).not.toContain('contenido-secreto');
   });
 
   it('no sale del espacio de trabajo', () => {

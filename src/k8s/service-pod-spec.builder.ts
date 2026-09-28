@@ -1,5 +1,6 @@
 import type { V1Pod, V1Service } from '@kubernetes/client-node';
 import {
+  REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
   SERVICE_SLUG_ANNOTATION,
@@ -29,6 +30,8 @@ export interface BuildServicePodSpecInput {
   readonly command: readonly string[];
   readonly port: number;
   readonly expiresAt: Date;
+  /** Aprobación que lo originó (para enlazarlo con el audit). */
+  readonly requestId?: string | undefined;
 }
 
 /**
@@ -60,6 +63,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),
         [SERVICE_SLUG_ANNOTATION]: input.slug,
+        ...(input.requestId
+          ? { [REQUEST_ID_ANNOTATION]: input.requestId }
+          : {}),
       },
     },
     spec: {

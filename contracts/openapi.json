@@ -97,6 +97,30 @@
         ]
       }
     },
+    "/services/{id}/files": {
+      "get": {
+        "operationId": "PreviewServiceController_exportFiles",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Archivos de texto del pod (sin node_modules, .git ni .jin), para traerlos al editor",
+        "tags": [
+          "services"
+        ]
+      }
+    },
     "/terminal/sessions": {
       "post": {
         "operationId": "TerminalController_start",

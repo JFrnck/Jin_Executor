@@ -81,6 +81,23 @@ describe('buildTerminalPodSpec', () => {
   });
 });
 
+describe('enlace con el audit', () => {
+  it('el pod lleva la aprobación que lo originó, y sin ella no inventa nada', () => {
+    const withId = buildTerminalPodSpec({
+      terminalId: 'abc',
+      namespace: 'agents-sandbox',
+      image: 'i',
+      npmRegistryUrl: 'http://x:4873',
+      expiresAt: new Date(),
+      requestId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(withId.metadata?.annotations?.['jin.io/request-id']).toBe(
+      '11111111-1111-4111-8111-111111111111',
+    );
+    expect(pod.metadata?.annotations).not.toHaveProperty('jin.io/request-id');
+  });
+});
+
 describe('buildTerminalEgressPolicy', () => {
   const policy = buildTerminalEgressPolicy({
     terminalId: 'abc',

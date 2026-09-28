@@ -1,5 +1,6 @@
 import type { V1NetworkPolicy, V1Pod } from '@kubernetes/client-node';
 import {
+  REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
   SERVICE_TYPE_LABEL,
@@ -19,6 +20,8 @@ export interface BuildTerminalPodSpecInput {
   /** Proxy de npm del clúster: la única salida de red del pod. */
   readonly npmRegistryUrl: string;
   readonly expiresAt: Date;
+  /** Aprobación que lo originó (para enlazarlo con el audit). */
+  readonly requestId?: string | undefined;
 }
 
 /**
@@ -47,6 +50,9 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
       },
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),
+        ...(input.requestId
+          ? { [REQUEST_ID_ANNOTATION]: input.requestId }
+          : {}),
       },
     },
     spec: {

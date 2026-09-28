@@ -6,6 +6,7 @@ import {
   HttpCode,
   Param,
   Post,
+  Query,
   UsePipes,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
@@ -16,6 +17,11 @@ import {
 } from './preview-service-request.schema';
 import type { PreviewServiceInfo } from './preview-service.types';
 import { PreviewServiceLifecycleService } from './preview-service.service';
+import {
+  ExportTerminalQuerySchema,
+  type ExportTerminalQuery,
+} from '../terminal/terminal-request.schema';
+import type { TerminalExportResult } from '../terminal/terminal.types';
 
 @ApiTags('services')
 @Controller('services')
@@ -51,6 +57,19 @@ export class PreviewServiceController {
   @ApiOperation({ summary: 'Detiene y destruye un pod de servicio activo' })
   async stop(@Param('id') id: string): Promise<void> {
     await this.previewService.stop(id);
+  }
+
+  @Get(':id/files')
+  @ApiOperation({
+    summary:
+      'Archivos de texto del pod (sin node_modules, .git ni .jin), para traerlos al editor',
+  })
+  async exportFiles(
+    @Param('id') id: string,
+    @Query(new ZodValidationPipe(ExportTerminalQuerySchema))
+    query: ExportTerminalQuery,
+  ): Promise<TerminalExportResult> {
+    return this.previewService.exportFiles(id, query.dir);
   }
 
   @Get()

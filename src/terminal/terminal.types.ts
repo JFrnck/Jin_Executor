@@ -15,6 +15,8 @@ export interface TerminalSessionInfo {
   readonly id: string;
   readonly status: TerminalStatus;
   readonly expiresAt: string;
+  /** Aprobación que abrió la sesión (enlace con el audit); null en sesiones anteriores. */
+  readonly requestId: string | null;
   /** Presente si el owner publicó un build de esta sesión. */
   readonly exposure: TerminalExposure | null;
 }
