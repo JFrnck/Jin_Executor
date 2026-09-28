@@ -82,6 +82,10 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
             { name: 'npm_config_audit', value: 'false' },
             { name: 'npm_config_fund', value: 'false' },
             { name: 'npm_config_update_notifier', value: 'false' },
+            // Pocas conexiones a la vez y más reintentos: el proxy es uno solo
+            // y una ráfaga de 15 conexiones nuevas lo saturaba.
+            { name: 'npm_config_maxsockets', value: '8' },
+            { name: 'npm_config_fetch_retries', value: '5' },
             { name: 'CI', value: 'true' },
           ],
           volumeMounts: [

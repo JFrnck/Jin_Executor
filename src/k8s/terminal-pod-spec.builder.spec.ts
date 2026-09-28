@@ -48,6 +48,9 @@ describe('buildTerminalPodSpec', () => {
       'http://verdaccio.registry-proxy.svc.cluster.local:4873',
     );
     expect(env.COREPACK_NPM_REGISTRY).toBe(env.npm_config_registry);
+    // Una ráfaga de conexiones nuevas saturaba al proxy (visto en K3s real).
+    expect(env.npm_config_maxsockets).toBe('8');
+    expect(env.npm_config_fetch_retries).toBe('5');
     for (const name of Object.keys(env)) {
       expect(name).not.toMatch(
         /TOKEN|SECRET|KEY|PASSWORD|DATABASE|MODAL|INFISICAL/i,
