@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EXPORT_FILES_SCRIPT,
   RUN_SCRIPT,
+  SERVICE_SCRIPT,
   WRITE_FILES_SCRIPT,
 } from './terminal-scripts';
 
@@ -233,5 +234,141 @@ describe('RUN_SCRIPT (el ejecutor de cada comando)', () => {
     expect(result.stdout).toBe('listo\n');
     expect(result.status).toBe(0);
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe('SERVICE_SCRIPT (servidores en segundo plano)', () => {
+  function svc(args: string[], env: Record<string, string>, timeout = 30_000) {
+    const result = spawnSync('node', ['-e', SERVICE_SCRIPT, ...args], {
+      env: { ...process.env, ...env },
+      encoding: 'utf8',
+      timeout,
+    });
+    return {
+      code: result.status,
+      json: JSON.parse(result.stdout || '{}') as {
+        status?: string;
+        code?: number;
+        log?: string;
+        stopped?: boolean;
+        services?: unknown[];
+      },
+      stderr: result.stderr,
+    };
+  }
+
+  function freePort(): number {
+    return 30_000 + Math.floor(Math.random() * 20_000);
+  }
+
+  function sandbox() {
+    const dir = tmp();
+    return {
+      dir,
+      env: {
+        JIN_SVC_DIR: join(dir, 'svc'),
+        JIN_WORKSPACE: dir,
+        JIN_CWD_FILE: join(dir, '.cwd'),
+      },
+    };
+  }
+
+  const server = (port: number) =>
+    `node -e "require('http').createServer((q,r)=>r.end('hola desde '+process.cwd())).listen(${port},'0.0.0.0')"`;
+
+  async function get(port: number): Promise<string | null> {
+    try {
+      return await (await fetch(`http://127.0.0.1:${port}/`)).text();
+    } catch {
+      return null;
+    }
+  }
+
+  it('lanza un servidor que SOBREVIVE al ejecutor, lo lista, muestra su log y lo detiene', async () => {
+    const { env } = sandbox();
+    const port = freePort();
+
+    const started = svc(['start', String(port), server(port)], env);
+    expect(started.code).toBe(0);
+    expect(started.json.status).toBe('listening');
+    // El ejecutor ya terminó y el servidor sigue respondiendo.
+    expect(await get(port)).toContain('hola desde');
+
+    const listed = svc(['list', '0'], env);
+    expect(listed.json.services).toEqual([
+      expect.objectContaining({ port, running: true, listening: true }),
+    ]);
+    expect(svc(['logs', String(port)], env).json.log).toBeDefined();
+
+    const stopped = svc(['stop', String(port)], env);
+    expect(stopped.json.stopped).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await get(port)).toBeNull();
+    expect(svc(['list', '0'], env).json.services).toEqual([]);
+  }, 60_000);
+
+  it('el servidor corre en el directorio guardado por `cd` (el del proyecto)', async () => {
+    const { dir, env } = sandbox();
+    mkdirSync(join(dir, 'app'));
+    writeFileSync(env.JIN_CWD_FILE, join(dir, 'app'));
+    const port = freePort();
+    try {
+      expect(svc(['start', String(port), server(port)], env).json.status).toBe(
+        'listening',
+      );
+      expect(await get(port)).toBe(`hola desde ${join(dir, 'app')}`);
+    } finally {
+      svc(['stop', String(port)], env);
+    }
+  }, 60_000);
+
+  it('un servidor que muere al arrancar devuelve exited con su log; uno ya corriendo no se duplica', () => {
+    const { env } = sandbox();
+    const failing = svc(
+      [
+        'start',
+        String(freePort()),
+        'echo "Error: no encuentro vite" >&2; exit 3',
+      ],
+      env,
+    );
+    expect(failing.json.status).toBe('exited');
+    expect(failing.json.code).toBe(3);
+    expect(failing.json.log).toContain('no encuentro vite');
+
+    const port = freePort();
+    try {
+      expect(svc(['start', String(port), server(port)], env).json.status).toBe(
+        'listening',
+      );
+      expect(svc(['start', String(port), server(port)], env).json.status).toBe(
+        'already-running',
+      );
+    } finally {
+      svc(['stop', String(port)], env);
+    }
+  }, 60_000);
+
+  it('detener mata el grupo entero (un `npm run dev` que lanza hijos no deja huérfanos)', async () => {
+    const { dir, env } = sandbox();
+    const port = freePort();
+    // sh -c "node server & wait": el servidor es nieto del sh.
+    writeFileSync(
+      join(dir, 'srv.js'),
+      "require('http').createServer((q, r) => r.end('ok')).listen(Number(process.env.PORT), '0.0.0.0');",
+    );
+    const command = `PORT=${port} sh -c 'node ${join(dir, 'srv.js')} & wait'`;
+    expect(svc(['start', String(port), command], env).json.status).toBe(
+      'listening',
+    );
+    expect(await get(port)).not.toBeNull();
+    svc(['stop', String(port)], env);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await get(port)).toBeNull();
+  }, 60_000);
+
+  it('detener algo que no existe no falla', () => {
+    const { env } = sandbox();
+    expect(svc(['stop', '45678'], env).json.stopped).toBe(false);
   });
 });

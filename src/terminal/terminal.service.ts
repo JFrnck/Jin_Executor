@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import type { V1Pod } from '@kubernetes/client-node';
 import { K8sService, type PodExecution } from '../k8s/k8s.service';
 import { collectExec } from '../k8s/pod-exec';
+import type { PodProxyResponse } from '../k8s/k8s.service';
 import {
   JINSERVER_TLS_SECRET_NAME,
   REQUEST_ID_ANNOTATION,
@@ -30,6 +31,8 @@ import {
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
 import { generateSlug } from '../preview-service/slug';
 import {
+  TerminalProxyError,
+  TerminalServiceError,
   TerminalBusyError,
   TerminalExposeError,
   TerminalFileTransferError,
@@ -40,16 +43,20 @@ import {
 import type {
   ExecTerminalRequest,
   ExposeTerminalRequest,
+  StartServiceRequest,
   StartTerminalRequest,
 } from './terminal-request.schema';
 import {
   CHECK_STATIC_SERVER,
   EXPORT_FILES_SCRIPT,
+  SERVICE_SCRIPT,
   RUN_SCRIPT,
   START_STATIC_SERVER,
   WRITE_FILES_SCRIPT,
 } from './terminal-scripts';
 import type {
+  TerminalServiceInfo,
+  TerminalServiceStart,
   TerminalExportResult,
   TerminalExposure,
   TerminalSessionInfo,
@@ -375,6 +382,107 @@ export class TerminalSessionService {
       files,
     );
     return { written: Object.keys(files).length };
+  }
+
+  // ── Servidores en segundo plano y vista previa ─────────────────────────
+
+  /**
+   * Lanza un servidor dentro de la sesión (`npm run dev -- --host 0.0.0.0`) que
+   * sobrevive al comando, y espera a que el puerto responda. Es código del owner
+   * corriendo en su sandbox, como cualquier comando: Jin_Core lo audita antes.
+   */
+  async startService(
+    terminalId: string,
+    request: StartServiceRequest,
+  ): Promise<TerminalServiceStart> {
+    this.rbacValidator.validate('runTerminalCommand');
+    await this.requireRunningPod(terminalId);
+    const result = await this.runServiceScript(terminalId, [
+      'start',
+      String(request.port),
+      request.command,
+    ]);
+    return result as unknown as TerminalServiceStart;
+  }
+
+  async stopService(terminalId: string, port: number): Promise<void> {
+    await this.requireRunningPod(terminalId);
+    await this.runServiceScript(terminalId, ['stop', String(port)]);
+  }
+
+  async listServices(terminalId: string): Promise<TerminalServiceInfo[]> {
+    await this.requireRunningPod(terminalId);
+    const result = await this.runServiceScript(terminalId, ['list', '0']);
+    return (result.services ?? []) as TerminalServiceInfo[];
+  }
+
+  async serviceLogs(terminalId: string, port: number): Promise<string> {
+    await this.requireRunningPod(terminalId);
+    const result = await this.runServiceScript(terminalId, [
+      'logs',
+      String(port),
+    ]);
+    return typeof result.log === 'string' ? result.log : '';
+  }
+
+  private async runServiceScript(
+    terminalId: string,
+    args: readonly string[],
+  ): Promise<Record<string, unknown> & { services?: unknown[] }> {
+    const result = await this.collect(terminalPodNameForId(terminalId), [
+      'node',
+      '-e',
+      SERVICE_SCRIPT,
+      ...args,
+    ]);
+    if (result.code !== 0) {
+      throw new TerminalServiceError(
+        `No se pudo manejar el servidor de la sesión: ${result.stderr.slice(0, 300)}`,
+        502,
+      );
+    }
+    try {
+      return JSON.parse(result.stdout) as Record<string, unknown>;
+    } catch {
+      throw new TerminalServiceError(
+        'La sesión devolvió una respuesta ilegible.',
+        502,
+      );
+    }
+  }
+
+  /**
+   * Reenvía una petición HTTP al puerto de un servidor de la sesión, a través
+   * del API server. Solo la sesión del propio owner y solo puertos de usuario.
+   */
+  async proxy(
+    terminalId: string,
+    port: number,
+    request: {
+      method: string;
+      path: string;
+      headers: Readonly<Record<string, string>>;
+      body?: Buffer | undefined;
+    },
+  ): Promise<PodProxyResponse> {
+    await this.requireRunningPod(terminalId);
+    try {
+      return await this.k8s.proxyToPod(
+        terminalPodNameForId(terminalId),
+        port,
+        request,
+      );
+    } catch (error) {
+      throw new TerminalProxyError(
+        error instanceof Error
+          ? error.message
+          : 'No se pudo llegar al servidor.',
+        error instanceof Error && error.message === 'ruta no permitida'
+          ? 400
+          : 502,
+        error,
+      );
+    }
   }
 
   // ── Publicar un build ──────────────────────────────────────────────────

@@ -53,3 +53,15 @@ export class TerminalFileTransferError extends JinError {
     });
   }
 }
+
+export class TerminalServiceError extends JinError {
+  constructor(message: string, httpStatus = 422) {
+    super(message, { code: 'TERMINAL_SERVICE_FAILED', httpStatus });
+  }
+}
+
+export class TerminalProxyError extends JinError {
+  constructor(message: string, httpStatus = 502, cause?: unknown) {
+    super(message, { code: 'TERMINAL_PROXY_FAILED', httpStatus, cause });
+  }
+}

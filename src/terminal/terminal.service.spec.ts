@@ -34,7 +34,12 @@ function pod(
 
 /** K8s simulado: `scripts` decide qué "devuelve" cada exec, en orden. */
 function fakeK8s(
-  options: { pods?: V1Pod[]; services?: V1Service[]; scripts?: Script[] } = {},
+  options: {
+    pods?: V1Pod[];
+    services?: V1Service[];
+    scripts?: Script[];
+    proxyToPod?: ReturnType<typeof vi.fn>;
+  } = {},
 ) {
   const pods = options.pods ?? [];
   const scripts = [...(options.scripts ?? [])];
@@ -54,6 +59,7 @@ function fakeK8s(
     createService: log('createService'),
     createIngressRoute: log('createIngressRoute'),
     waitForPodRunning: vi.fn().mockResolvedValue({}),
+    proxyToPod: options.proxyToPod ?? vi.fn(),
     deleteIngressRoute: log('deleteIngressRoute'),
     deleteService: log('deleteService'),
     deleteNetworkPolicy: log('deleteNetworkPolicy'),
@@ -461,6 +467,114 @@ describe('TerminalSessionService.expose', () => {
     );
     expect(mocks.deleteService).toHaveBeenCalled();
     expect(mocks.deleteIngressRoute).toHaveBeenCalled();
+  });
+});
+
+describe('TerminalSessionService: servidores y vista previa', () => {
+  it('lanzar un servidor manda el comando y el puerto como argumentos (nunca dentro del script)', async () => {
+    const { k8s, calls } = fakeK8s({
+      pods: [pod('t1')],
+      scripts: [
+        (o) => {
+          o.onStdout(
+            Buffer.from(
+              JSON.stringify({ status: 'listening', port: 5173, log: 'ready' }),
+            ),
+          );
+          return 0;
+        },
+      ],
+    });
+    const hostile = 'npm run dev; $(reboot) "\'';
+    const result = await service(k8s).startService('t1', {
+      command: hostile,
+      port: 5173,
+    });
+
+    expect(result).toMatchObject({ status: 'listening', port: 5173 });
+    const command = calls[0]?.command ?? [];
+    expect(command.slice(0, 2)).toEqual(['node', '-e']);
+    expect(command.slice(3)).toEqual(['start', '5173', hostile]);
+    expect(command[2]).not.toContain('reboot');
+  });
+
+  it('listar, detener y ver el log de un servidor exigen una sesión corriendo', async () => {
+    const missing = fakeK8s();
+    await expect(
+      service(missing.k8s).listServices('nope'),
+    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    await expect(
+      service(missing.k8s).stopService('nope', 5173),
+    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    await expect(
+      service(missing.k8s).serviceLogs('nope', 5173),
+    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    expect(missing.mocks.execInPod).not.toHaveBeenCalled();
+  });
+
+  it('listar devuelve los servidores; si el script falla, error claro (502)', async () => {
+    const ok = fakeK8s({
+      pods: [pod('t1')],
+      scripts: [
+        (o) => {
+          o.onStdout(
+            Buffer.from(
+              JSON.stringify({
+                services: [
+                  {
+                    port: 5173,
+                    command: 'npm run dev',
+                    startedAt: 'x',
+                    running: true,
+                    listening: true,
+                  },
+                ],
+              }),
+            ),
+          );
+          return 0;
+        },
+      ],
+    });
+    expect((await service(ok.k8s).listServices('t1'))[0]).toMatchObject({
+      port: 5173,
+      listening: true,
+    });
+
+    const bad = fakeK8s({
+      pods: [pod('t1')],
+      scripts: [
+        (o) => {
+          o.onStderr(Buffer.from('boom'));
+          return 1;
+        },
+      ],
+    });
+    await expect(service(bad.k8s).listServices('t1')).rejects.toThrow(/boom/);
+  });
+
+  it('el proxy reenvía a la sesión del owner y traduce un fallo de red a 502; una ruta no permitida a 400', async () => {
+    const proxyToPod = vi
+      .fn()
+      .mockResolvedValue({ status: 200, headers: {}, body: {} });
+    const fake = fakeK8s({ pods: [pod('t1')], proxyToPod });
+    const svc = service(fake.k8s);
+    const request = { method: 'GET', path: '/', headers: {} };
+
+    await svc.proxy('t1', 5173, request);
+    expect(proxyToPod).toHaveBeenCalledWith('agent-terminal-t1', 5173, request);
+
+    proxyToPod.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    const down = await svc.proxy('t1', 5173, request).catch((e: unknown) => e);
+    expect((down as { httpStatus: number }).httpStatus).toBe(502);
+
+    proxyToPod.mockRejectedValueOnce(new Error('ruta no permitida'));
+    const bad = await svc.proxy('t1', 5173, request).catch((e: unknown) => e);
+    expect((bad as { httpStatus: number }).httpStatus).toBe(400);
+
+    await expect(svc.proxy('nope', 5173, request)).rejects.toBeInstanceOf(
+      TerminalNotFoundError,
+    );
   });
 });
 

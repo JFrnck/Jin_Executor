@@ -243,6 +243,600 @@
         ]
       }
     },
+    "/terminal/sessions/{id}/services": {
+      "post": {
+        "operationId": "TerminalController_startService",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Lanza un servidor en segundo plano dentro de la sesión y espera a que el puerto responda",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "get": {
+        "operationId": "TerminalController_listServices",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Servidores en segundo plano de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/services/{port}": {
+      "delete": {
+        "operationId": "TerminalController_stopService",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Detiene un servidor en segundo plano (mata su grupo de procesos)",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/services/{port}/logs": {
+      "get": {
+        "operationId": "TerminalController_serviceLogs",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Últimas líneas de la salida de un servidor",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/proxy/{port}": {
+      "get": {
+        "operationId": "TerminalController_proxy_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "post": {
+        "operationId": "TerminalController_proxy_post",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "put": {
+        "operationId": "TerminalController_proxy_put",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "delete": {
+        "operationId": "TerminalController_proxy_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "patch": {
+        "operationId": "TerminalController_proxy_patch",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "options": {
+        "operationId": "TerminalController_proxy_options",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "head": {
+        "operationId": "TerminalController_proxy_head",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "search": {
+        "operationId": "TerminalController_proxy_search",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
+    "/terminal/sessions/{id}/proxy/{port}/{rest}": {
+      "get": {
+        "operationId": "TerminalController_proxy_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "post": {
+        "operationId": "TerminalController_proxy_post",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "put": {
+        "operationId": "TerminalController_proxy_put",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "delete": {
+        "operationId": "TerminalController_proxy_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "patch": {
+        "operationId": "TerminalController_proxy_patch",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "options": {
+        "operationId": "TerminalController_proxy_options",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "head": {
+        "operationId": "TerminalController_proxy_head",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      },
+      "search": {
+        "operationId": "TerminalController_proxy_search",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "port",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Proxy HTTP a un puerto de un servidor de la sesión",
+        "tags": [
+          "terminal"
+        ]
+      }
+    },
     "/terminal/sessions/{id}/expose": {
       "post": {
         "operationId": "TerminalController_expose",

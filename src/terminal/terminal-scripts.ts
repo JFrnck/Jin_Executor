@@ -172,3 +172,118 @@ export const START_STATIC_SERVER =
 /** ¿Responde el servidor? busybox `wget` viene en la imagen alpine. */
 export const CHECK_STATIC_SERVER =
   'wget -q -T 2 -O /dev/null http://127.0.0.1:"$1"/ 2>/dev/null';
+
+/**
+ * Servidores en segundo plano dentro de la sesión (`npm run dev`, un backend en
+ * el puerto 3000…). `node -e SERVICE_SCRIPT <modo> <puerto> [comando]`.
+ *
+ * A diferencia de `RUN_SCRIPT`, el proceso NO muere con el comando: se lanza en
+ * su propio grupo, con la salida a un archivo, y el ejecutor termina. Cada
+ * servidor guarda su pid/comando en `JIN_SVC_DIR` (`/tmp/.jin-svc`) para poder
+ * listarlo, ver su log y detenerlo (se mata el grupo entero).
+ *
+ * - `start`: lanza `sh -c <comando>` y espera (hasta 45 s) a que el puerto
+ *   acepte conexiones, o a que el proceso termine. Devuelve `listening`,
+ *   `exited` o `timeout` con las últimas líneas del log.
+ * - `stop`, `list` y `logs` son lo que dicen.
+ */
+export const SERVICE_SCRIPT = `
+const fs = require('node:fs');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const dir = process.env.JIN_SVC_DIR || '/tmp/.jin-svc';
+const workspace = process.env.JIN_WORKSPACE || '/workspace';
+const cwdFile = process.env.JIN_CWD_FILE || '/tmp/.jin-cwd';
+const mode = process.argv[1];
+const port = Number(process.argv[2]);
+const command = process.argv[3];
+fs.mkdirSync(dir, { recursive: true });
+const metaFile = (p) => path.join(dir, p + '.json');
+const logFile = (p) => path.join(dir, p + '.log');
+const out = (value) => { process.stdout.write(JSON.stringify(value)); };
+function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+function readMeta(p) { try { return JSON.parse(fs.readFileSync(metaFile(p), 'utf8')); } catch { return null; } }
+function tail(p, bytes) {
+  try {
+    const buffer = fs.readFileSync(logFile(p));
+    return buffer.subarray(Math.max(0, buffer.length - bytes)).toString('utf8');
+  } catch { return ''; }
+}
+function listening(p) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port: p, host: '127.0.0.1' });
+    socket.setTimeout(500, () => { socket.destroy(); resolve(false); });
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => resolve(false));
+  });
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function killGroup(pid, signal) { try { process.kill(-pid, signal); } catch {} }
+
+async function main() {
+  if (mode === 'start') {
+    const previous = readMeta(port);
+    if (previous && alive(previous.pid)) {
+      out({ status: 'already-running', pid: previous.pid, port, log: tail(port, 1500) });
+      return;
+    }
+    let cwd = workspace;
+    try {
+      const saved = fs.readFileSync(cwdFile, 'utf8').trim();
+      if (saved && fs.statSync(saved).isDirectory()) cwd = saved;
+    } catch {}
+    const fd = fs.openSync(logFile(port), 'w');
+    const child = spawn('sh', ['-c', command], { cwd, detached: true, stdio: ['ignore', fd, fd] });
+    let exited = null;
+    child.on('exit', (code) => { exited = code === null ? 1 : code; });
+    child.on('error', () => { exited = 127; });
+    fs.writeFileSync(metaFile(port), JSON.stringify({ pid: child.pid, port, command, cwd, startedAt: new Date().toISOString() }));
+    for (let waited = 0; waited < 45000; waited += 300) {
+      if (await listening(port)) {
+        child.unref();
+        out({ status: 'listening', pid: child.pid, port, log: tail(port, 1500) });
+        return;
+      }
+      if (exited !== null) {
+        out({ status: 'exited', code: exited, port, log: tail(port, 3000) });
+        try { fs.unlinkSync(metaFile(port)); } catch {}
+        return;
+      }
+      await sleep(300);
+    }
+    child.unref();
+    out({ status: 'timeout', pid: child.pid, port, log: tail(port, 3000) });
+    return;
+  }
+  if (mode === 'stop') {
+    const meta = readMeta(port);
+    if (!meta) { out({ stopped: false }); return; }
+    killGroup(meta.pid, 'SIGTERM');
+    for (let i = 0; i < 10 && alive(meta.pid); i++) await sleep(200);
+    if (alive(meta.pid)) killGroup(meta.pid, 'SIGKILL');
+    try { fs.unlinkSync(metaFile(port)); } catch {}
+    out({ stopped: true });
+    return;
+  }
+  if (mode === 'list') {
+    const services = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.json')) continue;
+      const meta = readMeta(Number(name.slice(0, -5)));
+      if (!meta) continue;
+      const isAlive = alive(meta.pid);
+      services.push({ port: meta.port, command: meta.command, startedAt: meta.startedAt, running: isAlive, listening: isAlive && (await listening(meta.port)) });
+    }
+    services.sort((a, b) => a.port - b.port);
+    out({ services });
+    return;
+  }
+  if (mode === 'logs') {
+    out({ log: tail(port, 8000) });
+    return;
+  }
+  throw new Error('modo desconocido: ' + mode);
+}
+main().then(() => process.exit(0), (error) => { process.stderr.write(String(error && error.message || error)); process.exit(1); });
+`;

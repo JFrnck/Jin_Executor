@@ -210,6 +210,91 @@ describe('TerminalSessionService (integración, K3s real)', () => {
     ).toEqual([]);
   }, 240_000);
 
+  it('vista previa en vivo: un servidor en segundo plano sobrevive al comando y se ve a través del API server, con las NetworkPolicies puestas', async () => {
+    const info = await terminal.start({
+      files: {
+        'server.js': `
+          require('http').createServer((req, res) => {
+            let body = '';
+            req.on('data', (c) => (body += c));
+            req.on('end', () => {
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ method: req.method, url: req.url, host: req.headers.host, body, cookie: req.headers.cookie ?? null, auth: req.headers.authorization ?? null }));
+            });
+          }).listen(5173, '0.0.0.0');
+        `,
+      },
+      ttlSeconds: 3600,
+    });
+    try {
+      const started = await terminal.startService(info.id, {
+        command: 'node server.js',
+        port: 5173,
+      });
+      expect(started.status).toBe('listening');
+
+      // Un comando aparte no lo mata: el servidor es de la sesión, no del comando.
+      await run(info.id, 'echo otro comando');
+      expect((await terminal.listServices(info.id))[0]).toMatchObject({
+        port: 5173,
+        running: true,
+        listening: true,
+      });
+
+      const read = async (res: Awaited<ReturnType<typeof terminal.proxy>>) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of res.body) chunks.push(chunk as Buffer);
+        return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<
+          string,
+          unknown
+        >;
+      };
+
+      const get = await terminal.proxy(info.id, 5173, {
+        method: 'GET',
+        path: '/src/main.js?t=1',
+        headers: { host: 'localhost:5173', 'accept-encoding': 'identity' },
+      });
+      expect(get.status).toBe(200);
+      expect(await read(get)).toMatchObject({
+        method: 'GET',
+        url: '/src/main.js?t=1',
+        host: 'localhost:5173',
+        cookie: null,
+        auth: null,
+      });
+
+      const post = await terminal.proxy(info.id, 5173, {
+        method: 'POST',
+        path: '/api/items',
+        headers: { host: 'localhost:5173', 'content-type': 'application/json' },
+        body: Buffer.from('{"a":1}'),
+      });
+      expect(await read(post)).toMatchObject({
+        method: 'POST',
+        body: '{"a":1}',
+      });
+
+      // Un puerto donde no hay nada: el API server responde con error, no cuelga.
+      const nothing = await terminal
+        .proxy(info.id, 5999, { method: 'GET', path: '/', headers: {} })
+        .then((res) => res.status)
+        .catch(() => 502);
+      expect(nothing).toBeGreaterThanOrEqual(500);
+
+      // Detener el servidor lo apaga de verdad.
+      await terminal.stopService(info.id, 5173);
+      expect(await terminal.listServices(info.id)).toEqual([]);
+      const after = await terminal
+        .proxy(info.id, 5173, { method: 'GET', path: '/', headers: {} })
+        .then((res) => res.status)
+        .catch(() => 502);
+      expect(after).toBeGreaterThanOrEqual(500);
+    } finally {
+      await terminal.stop(info.id);
+    }
+  }, 180_000);
+
   it('el timeout del pod mata el comando (KILL) y avisa con 137', async () => {
     const info = await terminal.start({ files: {}, ttlSeconds: 3600 });
     try {

@@ -1,4 +1,6 @@
 import {
+  All,
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,16 +10,20 @@ import {
   Post,
   Put,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import {
   ExecTerminalRequestSchema,
   ExportTerminalQuerySchema,
   ExposeTerminalRequestSchema,
   ImportTerminalRequestSchema,
+  StartServiceRequestSchema,
+  parsePort,
+  type StartServiceRequest,
   StartTerminalRequestSchema,
   type ExecTerminalRequest,
   type ExportTerminalQuery,
@@ -27,6 +33,8 @@ import {
 } from './terminal-request.schema';
 import { TerminalSessionService } from './terminal.service';
 import type {
+  TerminalServiceInfo,
+  TerminalServiceStart,
   TerminalExportResult,
   TerminalExposure,
   TerminalSessionInfo,
@@ -136,6 +144,97 @@ export class TerminalController {
     return this.terminal.importFiles(id, body.files);
   }
 
+  // ── Servidores en segundo plano y vista previa ───────────────────────
+
+  @Post(':id/services')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Lanza un servidor en segundo plano dentro de la sesión y espera a que el puerto responda',
+  })
+  async startService(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(StartServiceRequestSchema))
+    body: StartServiceRequest,
+  ): Promise<TerminalServiceStart> {
+    return this.terminal.startService(id, body);
+  }
+
+  @Get(':id/services')
+  @ApiOperation({ summary: 'Servidores en segundo plano de la sesión' })
+  async listServices(@Param('id') id: string): Promise<TerminalServiceInfo[]> {
+    return this.terminal.listServices(id);
+  }
+
+  @Delete(':id/services/:port')
+  @HttpCode(204)
+  @ApiOperation({
+    summary: 'Detiene un servidor en segundo plano (mata su grupo de procesos)',
+  })
+  async stopService(
+    @Param('id') id: string,
+    @Param('port') rawPort: string,
+  ): Promise<void> {
+    await this.terminal.stopService(id, this.portOrFail(rawPort));
+  }
+
+  @Get(':id/services/:port/logs')
+  @ApiOperation({ summary: 'Últimas líneas de la salida de un servidor' })
+  async serviceLogs(
+    @Param('id') id: string,
+    @Param('port') rawPort: string,
+  ): Promise<{ log: string }> {
+    return {
+      log: await this.terminal.serviceLogs(id, this.portOrFail(rawPort)),
+    };
+  }
+
+  /**
+   * Reenvía la petición al puerto de un servidor de la sesión (vista previa en
+   * vivo). Solo lo llama Jin_Core, con el JWT del owner ya verificado.
+   */
+  @All([':id/proxy/:port', ':id/proxy/:port/*rest'])
+  @ApiOperation({
+    summary: 'Proxy HTTP a un puerto de un servidor de la sesión',
+  })
+  async proxy(
+    @Param('id') id: string,
+    @Param('port') rawPort: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    const port = this.portOrFail(rawPort);
+    const prefix = `/terminal/sessions/${encodeURIComponent(id)}/proxy/${rawPort}`;
+    const rest = req.originalUrl.startsWith(prefix)
+      ? req.originalUrl.slice(prefix.length)
+      : '';
+    const path = rest === '' || rest.startsWith('?') ? `/${rest}` : rest;
+
+    const upstream = await this.terminal.proxy(id, port, {
+      method: req.method,
+      path,
+      headers: forwardedRequestHeaders(req, port),
+      body: await requestBody(req),
+    });
+
+    res.status(upstream.status);
+    for (const [name, value] of Object.entries(upstream.headers)) {
+      if (value !== undefined && RESPONSE_HEADERS.has(name.toLowerCase())) {
+        res.setHeader(name, value);
+      }
+    }
+    upstream.body.on('error', () => res.destroy());
+    res.on('close', () => upstream.body.destroy());
+    upstream.body.pipe(res);
+  }
+
+  private portOrFail(raw: string): number {
+    const port = parsePort(raw);
+    if (port === null)
+      throw new BadRequestException('Puerto no válido (1024–65535).');
+    return port;
+  }
+
   @Post(':id/expose')
   @HttpCode(200)
   @ApiOperation({
@@ -149,4 +248,71 @@ export class TerminalController {
   ): Promise<TerminalExposure> {
     return this.terminal.expose(id, body);
   }
+}
+
+/** Cabeceras que se reenvían al servidor: el resto (cookies, autorización, host) no. */
+const REQUEST_HEADERS = [
+  'accept',
+  'accept-language',
+  'content-type',
+  'range',
+  'user-agent',
+];
+/** Cabeceras de la respuesta que se devuelven. Sin `set-cookie`, sin las de conexión. */
+const RESPONSE_HEADERS = new Set([
+  'content-type',
+  'content-length',
+  'cache-control',
+  'etag',
+  'last-modified',
+  'location',
+  'content-disposition',
+  'content-range',
+  'accept-ranges',
+  'x-content-type-options',
+]);
+/** Tope del cuerpo de una petición reenviada. */
+const MAX_PROXY_BODY_BYTES = 10 * 1024 * 1024;
+
+function forwardedRequestHeaders(
+  req: Request,
+  port: number,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    // El servidor de desarrollo ve una petición local: Vite rechaza otros `Host`.
+    host: `localhost:${port}`,
+    // Sin compresión: el cliente recibe el cuerpo tal cual.
+    'accept-encoding': 'identity',
+  };
+  for (const name of REQUEST_HEADERS) {
+    const value = req.headers[name];
+    if (typeof value === 'string') headers[name] = value;
+  }
+  return headers;
+}
+
+/** Cuerpo de la petición: el JSON que Nest ya leyó, o el stream crudo (con tope). */
+async function requestBody(req: Request): Promise<Buffer | undefined> {
+  if (req.method === 'GET' || req.method === 'HEAD') return undefined;
+  if (
+    req.body !== undefined &&
+    req.body !== null &&
+    typeof req.body === 'object' &&
+    Object.keys(req.body as object).length > 0
+  ) {
+    return Buffer.from(JSON.stringify(req.body));
+  }
+  if (req.readableEnded || req.complete === false) return undefined;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk as string);
+    size += buffer.length;
+    if (size > MAX_PROXY_BODY_BYTES)
+      throw new BadRequestException('Cuerpo demasiado grande.');
+    chunks.push(buffer);
+  }
+  return chunks.length > 0 ? Buffer.concat(chunks) : undefined;
 }

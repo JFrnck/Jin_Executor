@@ -4,6 +4,8 @@ import {
   ExportTerminalQuerySchema,
   ExposeTerminalRequestSchema,
   ImportTerminalRequestSchema,
+  StartServiceRequestSchema,
+  parsePort,
   StartTerminalRequestSchema,
 } from './terminal-request.schema';
 
@@ -87,5 +89,47 @@ describe('export / import / expose', () => {
       ExposeTerminalRequestSchema.safeParse({ serverSource: 'x', dir: '../..' })
         .success,
     ).toBe(false);
+  });
+});
+
+describe('servidores y puertos', () => {
+  it('el puerto es de usuario (1024–65535) y el comando entre 1 y 4096 caracteres', () => {
+    expect(
+      StartServiceRequestSchema.safeParse({
+        command: 'npm run dev',
+        port: 5173,
+      }).success,
+    ).toBe(true);
+    for (const port of [80, 1023, 65536, 1.5, -1]) {
+      expect(
+        StartServiceRequestSchema.safeParse({ command: 'x', port }).success,
+      ).toBe(false);
+    }
+    expect(
+      StartServiceRequestSchema.safeParse({ command: '', port: 5173 }).success,
+    ).toBe(false);
+    expect(
+      StartServiceRequestSchema.safeParse({
+        command: 'x'.repeat(4097),
+        port: 5173,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parsePort solo acepta dígitos dentro del rango', () => {
+    expect(parsePort('5173')).toBe(5173);
+    for (const bad of [
+      '80',
+      '1023',
+      '65536',
+      '5173abc',
+      '5e3',
+      '-1',
+      '',
+      ' 5173',
+      '0x1400',
+    ]) {
+      expect(parsePort(bad)).toBeNull();
+    }
   });
 });

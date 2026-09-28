@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import http from 'node:http';
+import https from 'node:https';
 import { Readable, Writable } from 'node:stream';
 import {
   CoreV1Api,
@@ -36,6 +38,21 @@ export function exitCodeFromStatus(status: V1Status): number {
   );
   const parsed = Number(cause?.message);
   return Number.isInteger(parsed) ? parsed : -1;
+}
+
+export interface PodProxyRequest {
+  readonly method: string;
+  /** Ruta dentro del pod, con `/` inicial y query (`/src/main.js?t=1`). */
+  readonly path: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: Buffer | undefined;
+  readonly timeoutMs?: number;
+}
+
+export interface PodProxyResponse {
+  readonly status: number;
+  readonly headers: http.IncomingHttpHeaders;
+  readonly body: Readable;
 }
 
 export interface PodExecOptions {
@@ -241,6 +258,64 @@ export class K8sService {
         }
       },
     };
+  }
+
+  /**
+   * Hace una petición HTTP a un puerto de un pod a través del subrecurso
+   * `pods/proxy` del API server. El Executor no alcanza los pods directamente
+   * (su NetworkPolicy excluye los CIDRs del clúster): todo pasa por el API
+   * server, con el RBAC del Role. La ruta se valida ACÁ: sin `..` (ni escapado)
+   * para que no pueda salir del prefijo del pod y llegar a otra ruta del API.
+   */
+  async proxyToPod(
+    podName: string,
+    port: number,
+    request: PodProxyRequest,
+  ): Promise<PodProxyResponse> {
+    const [rawPath = '/'] = request.path.split('?');
+    let decoded = rawPath;
+    try {
+      decoded = decodeURIComponent(rawPath);
+    } catch {
+      throw new Error('ruta mal codificada');
+    }
+    if (
+      !request.path.startsWith('/') ||
+      decoded.split('/').includes('..') ||
+      decoded.includes('\\') ||
+      [...request.path].some((char) => char.charCodeAt(0) < 32)
+    ) {
+      throw new Error('ruta no permitida');
+    }
+
+    const cluster = this.kubeConfig.getCurrentCluster();
+    if (!cluster) throw new Error('kubeconfig sin cluster');
+    const server = new URL(cluster.server);
+    const options: https.RequestOptions = {
+      method: request.method,
+      hostname: server.hostname,
+      port: server.port || (server.protocol === 'https:' ? 443 : 80),
+      path: `/api/v1/namespaces/${this.namespace}/pods/${podName}:${port}/proxy${request.path}`,
+      headers: { ...request.headers },
+    };
+    await this.kubeConfig.applyToHTTPSOptions(options);
+    const transport = server.protocol === 'https:' ? https : http;
+
+    return new Promise((resolve, reject) => {
+      const outgoing = transport.request(options, (response) =>
+        resolve({
+          status: response.statusCode ?? 502,
+          headers: response.headers,
+          body: response,
+        }),
+      );
+      outgoing.on('error', reject);
+      outgoing.setTimeout(request.timeoutMs ?? 30_000, () =>
+        outgoing.destroy(new Error('el pod no respondió a tiempo')),
+      );
+      if (request.body && request.body.length > 0) outgoing.write(request.body);
+      outgoing.end();
+    });
   }
 
   async listServicesByLabel(labelSelector: string): Promise<V1Service[]> {

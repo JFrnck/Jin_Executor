@@ -69,3 +69,20 @@ export const ExposeTerminalRequestSchema = z.object({
   serverSource: z.string().min(1).max(TERMINAL_MAX_SERVER_SOURCE_BYTES),
 });
 export type ExposeTerminalRequest = z.infer<typeof ExposeTerminalRequestSchema>;
+
+/** Puertos de usuario: nada por debajo de 1024 (no son de un servidor de desarrollo). */
+export const TERMINAL_MIN_PORT = 1024;
+const PortSchema = z.number().int().min(TERMINAL_MIN_PORT).max(65535);
+
+export const StartServiceRequestSchema = z.object({
+  command: z.string().min(1).max(TERMINAL_MAX_COMMAND_LENGTH),
+  port: PortSchema,
+});
+export type StartServiceRequest = z.infer<typeof StartServiceRequestSchema>;
+
+/** `:port` de la URL del proxy y de `DELETE`/`logs`. */
+export function parsePort(raw: string): number | null {
+  if (!/^\d{1,5}$/.test(raw)) return null;
+  const port = Number(raw);
+  return port >= TERMINAL_MIN_PORT && port <= 65535 ? port : null;
+}
