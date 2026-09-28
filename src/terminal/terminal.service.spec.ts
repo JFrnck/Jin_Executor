@@ -1,16 +1,21 @@
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi } from 'vitest';
-import type { V1Pod, V1Service } from '@kubernetes/client-node';
+import type {
+  V1PersistentVolumeClaim,
+  V1Pod,
+  V1Service,
+} from '@kubernetes/client-node';
 import type { K8sService, PodExecOptions } from '../k8s/k8s.service';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
 import {
   TerminalBusyError,
   TerminalExposeError,
   TerminalLimitError,
-  TerminalNotFoundError,
   TerminalNotRunningError,
+  TerminalWorkspaceLimitError,
+  TerminalWorkspaceNotFoundError,
 } from './errors';
-import { TerminalSessionService } from './terminal.service';
+import { TerminalWorkspaceService } from './terminal.service';
 import type { TerminalStreamEvent } from './terminal.types';
 
 type Script = (options: PodExecOptions) => Promise<number> | number;
@@ -32,18 +37,42 @@ function pod(
   };
 }
 
+function pvc(
+  id: string,
+  overrides: { createdAt?: string } = {},
+): V1PersistentVolumeClaim {
+  return {
+    metadata: {
+      name: `terminal-ws-${id}`,
+      labels: { 'jin.io/service-id': id, 'jin.io/type': 'workspace' },
+      creationTimestamp: new Date(
+        overrides.createdAt ?? '2026-09-28T10:00:00.000Z',
+      ),
+    },
+  };
+}
+
+interface PatchCall {
+  readonly name: string;
+  readonly key: string;
+  readonly value: string;
+}
+
 /** K8s simulado: `scripts` decide qué "devuelve" cada exec, en orden. */
 function fakeK8s(
   options: {
     pods?: V1Pod[];
+    pvcs?: V1PersistentVolumeClaim[];
     services?: V1Service[];
     scripts?: Script[];
     proxyToPod?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const pods = options.pods ?? [];
+  const pvcs = [...(options.pvcs ?? [])];
   const scripts = [...(options.scripts ?? [])];
   const calls: PodExecOptions[] = [];
+  const patchCalls: PatchCall[] = [];
   const order: string[] = [];
 
   const log = (name: string) =>
@@ -53,19 +82,39 @@ function fakeK8s(
     });
   const mocks = {
     listPodsByLabel: vi.fn().mockImplementation(() => Promise.resolve(pods)),
+    listPvcsByLabel: vi.fn().mockImplementation(() => Promise.resolve(pvcs)),
     listServicesByLabel: vi.fn().mockResolvedValue(options.services ?? []),
     createPod: log('createPod'),
+    createPvc: vi.fn().mockImplementation((body: V1PersistentVolumeClaim) => {
+      order.push('createPvc');
+      pvcs.push(body);
+      return Promise.resolve(body);
+    }),
     createNetworkPolicy: log('createNetworkPolicy'),
     createService: log('createService'),
     createIngressRoute: log('createIngressRoute'),
     waitForPodRunning: vi.fn().mockResolvedValue({}),
+    waitForPodGone: vi.fn().mockResolvedValue(undefined),
     proxyToPod: options.proxyToPod ?? vi.fn(),
     deleteIngressRoute: log('deleteIngressRoute'),
     deleteService: log('deleteService'),
     deleteNetworkPolicy: log('deleteNetworkPolicy'),
     deletePod: log('deletePod'),
+    deletePvc: log('deletePvc'),
+    patchPodAnnotation: vi
+      .fn()
+      .mockImplementation((name: string, key: string, value: string) => {
+        patchCalls.push({ name, key, value });
+        return Promise.resolve(undefined);
+      }),
     readPod: vi.fn().mockImplementation((name: string) => {
       const found = pods.find((candidate) => candidate.metadata?.name === name);
+      return found
+        ? Promise.resolve(found)
+        : Promise.reject(Object.assign(new Error('not found'), { code: 404 }));
+    }),
+    readPvc: vi.fn().mockImplementation((name: string) => {
+      const found = pvcs.find((candidate) => candidate.metadata?.name === name);
       return found
         ? Promise.resolve(found)
         : Promise.reject(Object.assign(new Error('not found'), { code: 404 }));
@@ -75,23 +124,18 @@ function fakeK8s(
       .mockImplementation((_name: string, execOptions: PodExecOptions) => {
         calls.push(execOptions);
         const script = scripts.shift();
-        const aborted = { value: false };
         const exitCode = Promise.resolve().then(async () => {
           if (!script) return 0;
           return script(execOptions);
         });
-        return Promise.resolve({
-          exitCode,
-          abort: () => {
-            aborted.value = true;
-          },
-        });
+        return Promise.resolve({ exitCode, abort: () => undefined });
       }),
   };
   return {
     k8s: { namespace: 'agents-sandbox', ...mocks } as unknown as K8sService,
     mocks,
     calls,
+    patchCalls,
     order,
   };
 }
@@ -105,31 +149,40 @@ function config(overrides: Record<string, unknown> = {}): ConfigService {
     TERMINAL_DEFAULT_TTL_SECONDS: 3600,
     TERMINAL_MAX_TTL_SECONDS: 14400,
     TERMINAL_MAX_CONCURRENT: 1,
+    TERMINAL_MAX_WORKSPACES: 10,
+    TERMINAL_WORKSPACE_STORAGE_GI: 3,
     ...overrides,
   };
   return { get: (key: string) => values[key] } as unknown as ConfigService;
 }
 
 function service(k8s: K8sService, overrides: Record<string, unknown> = {}) {
-  return new TerminalSessionService(
+  return new TerminalWorkspaceService(
     new RbacValidatorService(),
     k8s,
     config(overrides),
   );
 }
 
-describe('TerminalSessionService.start', () => {
-  it('crea el pod y su policy de salida, espera a que corra y sube los archivos', async () => {
+describe('TerminalWorkspaceService.start — proyecto nuevo', () => {
+  it('crea el disco y el pod, en ese orden, y sube los archivos (solo pasa la primera vez)', async () => {
     const { k8s, mocks, calls, order } = fakeK8s({ scripts: [() => 0] });
-    const info = await service(k8s).start({
+    const info = await service(k8s).start('t1', {
       files: { 'index.html': '<h1>x</h1>' },
       ttlSeconds: 1800,
     });
 
     expect(info.status).toBe('running');
     expect(info.exposure).toBeNull();
-    expect(order.slice(0, 2)).toEqual(['createPod', 'createNetworkPolicy']);
+    expect(order.slice(0, 3)).toEqual([
+      'createPvc',
+      'createPod',
+      'createNetworkPolicy',
+    ]);
     expect(mocks.waitForPodRunning).toHaveBeenCalledTimes(1);
+    const createdPvc = mocks.createPvc.mock
+      .calls[0]?.[0] as V1PersistentVolumeClaim;
+    expect(createdPvc.metadata?.name).toBe('terminal-ws-t1');
     // Los archivos viajan por stdin con el largo por delante, no por argumentos.
     const upload = calls[0];
     expect(upload?.command.slice(0, 2)).toEqual(['node', '-e']);
@@ -146,48 +199,123 @@ describe('TerminalSessionService.start', () => {
   it('respeta el TTL máximo aunque el request pida más', async () => {
     const { k8s } = fakeK8s();
     const before = Date.now();
-    const info = await service(k8s, { TERMINAL_MAX_TTL_SECONDS: 7200 }).start({
-      files: {},
-      ttlSeconds: 86400,
-    });
-    const ttl = (new Date(info.expiresAt).getTime() - before) / 1000;
+    const info = await service(k8s, { TERMINAL_MAX_TTL_SECONDS: 7200 }).start(
+      't1',
+      { files: {}, ttlSeconds: 86400 },
+    );
+    const ttl = (new Date(info.expiresAt ?? 0).getTime() - before) / 1000;
     expect(ttl).toBeGreaterThan(7190);
     expect(ttl).toBeLessThanOrEqual(7201);
   });
 
-  it('no abre otra si ya hay una viva (límite), pero una fallida no cuenta', async () => {
-    const alive = fakeK8s({ pods: [pod('a')] });
+  it('tope de proyectos con disco (workspaces): uno nuevo no entra si ya se llegó al límite', async () => {
+    const { k8s, mocks } = fakeK8s({ pvcs: [pvc('a'), pvc('b')] });
     await expect(
-      service(alive.k8s).start({ files: {}, ttlSeconds: 60 }),
-    ).rejects.toBeInstanceOf(TerminalLimitError);
-    expect(alive.mocks.createPod).not.toHaveBeenCalled();
-
-    const failed = fakeK8s({ pods: [pod('a', { phase: 'Failed' })] });
-    await expect(
-      service(failed.k8s).start({ files: {}, ttlSeconds: 60 }),
-    ).resolves.toBeDefined();
+      service(k8s, { TERMINAL_MAX_WORKSPACES: 2 }).start('c', {
+        files: {},
+        ttlSeconds: 60,
+      }),
+    ).rejects.toBeInstanceOf(TerminalWorkspaceLimitError);
+    expect(mocks.createPvc).not.toHaveBeenCalled();
+    expect(mocks.createPod).not.toHaveBeenCalled();
   });
 
-  it('si algo falla al armarla, no deja nada vivo y propaga el error', async () => {
+  it('reanudar uno de los proyectos que YA tienen disco no cuenta contra el tope, aunque esté al límite', async () => {
+    const { k8s } = fakeK8s({ pvcs: [pvc('a'), pvc('b')] });
+    await expect(
+      service(k8s, { TERMINAL_MAX_WORKSPACES: 2 }).start('a', {
+        files: {},
+        ttlSeconds: 60,
+      }),
+    ).resolves.toMatchObject({ status: 'running' });
+  });
+
+  it('tope de pods CORRIENDO a la vez: otro proyecto ya corriendo bloquea uno nuevo, sin tocar discos', async () => {
+    const { k8s, mocks } = fakeK8s({ pods: [pod('otro')] });
+    await expect(
+      service(k8s).start('nuevo', { files: {}, ttlSeconds: 60 }),
+    ).rejects.toBeInstanceOf(TerminalLimitError);
+    expect(mocks.createPvc).not.toHaveBeenCalled();
+    expect(mocks.createPod).not.toHaveBeenCalled();
+  });
+
+  it('si algo falla al armarlo, no deja nada vivo; como el disco es NUEVO, también se borra', async () => {
     const { k8s, mocks } = fakeK8s();
     mocks.waitForPodRunning.mockRejectedValueOnce(new Error('imagen no baja'));
     await expect(
-      service(k8s).start({ files: {}, ttlSeconds: 60 }),
+      service(k8s).start('t1', { files: {}, ttlSeconds: 60 }),
     ).rejects.toThrow('imagen no baja');
     expect(mocks.deletePod).toHaveBeenCalledTimes(1);
     expect(mocks.deleteNetworkPolicy).toHaveBeenCalledTimes(2);
+    expect(mocks.deletePvc).toHaveBeenCalledTimes(1);
   });
 
-  it('si la subida de archivos falla (código != 0) también se limpia', async () => {
+  it('si la subida de archivos falla (código != 0) también se limpia, disco incluido', async () => {
     const { k8s, mocks } = fakeK8s({ scripts: [() => 1] });
     await expect(
-      service(k8s).start({ files: { 'a.txt': 'x' }, ttlSeconds: 60 }),
+      service(k8s).start('t1', { files: { 'a.txt': 'x' }, ttlSeconds: 60 }),
     ).rejects.toThrow(/copiar los archivos/);
     expect(mocks.deletePod).toHaveBeenCalledTimes(1);
+    expect(mocks.deletePvc).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('TerminalSessionService.exec', () => {
+describe('TerminalWorkspaceService.start — proyecto que ya tenía disco', () => {
+  it('reanudarlo NO crea el disco de nuevo ni sube los archivos, aunque se los pasen', async () => {
+    const { k8s, mocks, calls } = fakeK8s({ pvcs: [pvc('t1')] });
+    const info = await service(k8s).start('t1', {
+      files: { 'index.html': '<h1>no debería escribirse</h1>' },
+      ttlSeconds: 1800,
+    });
+    expect(info.status).toBe('running');
+    expect(mocks.createPvc).not.toHaveBeenCalled();
+    expect(calls).toEqual([]); // sin exec: no hubo subida de archivos
+  });
+
+  it('ya está corriendo (o arrancando): no crea nada, toca actividad y devuelve lo que hay', async () => {
+    for (const phase of ['Running', 'Pending']) {
+      const { k8s, mocks, patchCalls } = fakeK8s({
+        pods: [pod('t1', { phase })],
+        pvcs: [pvc('t1')],
+      });
+      const info = await service(k8s).start('t1', {
+        files: {},
+        ttlSeconds: 60,
+      });
+      expect(info.status).toBe(phase === 'Running' ? 'running' : 'starting');
+      expect(mocks.createPod).not.toHaveBeenCalled();
+      expect(mocks.waitForPodRunning).not.toHaveBeenCalled();
+      expect(patchCalls).toHaveLength(1); // actividad tocada al reanudar
+    }
+  });
+
+  it('vencido o caído: se limpia y se vuelve a crear el pod, con el MISMO disco (no uno nuevo)', async () => {
+    const { k8s, mocks } = fakeK8s({
+      pods: [
+        pod('t1', { expiresAt: new Date(Date.now() - 1000).toISOString() }),
+      ],
+      pvcs: [pvc('t1')],
+    });
+    const info = await service(k8s).start('t1', { files: {}, ttlSeconds: 60 });
+    expect(info.status).toBe('running');
+    expect(mocks.deletePod).toHaveBeenCalledTimes(1); // limpieza del pod vencido
+    expect(mocks.createPod).toHaveBeenCalledTimes(1); // uno nuevo
+    expect(mocks.createPvc).not.toHaveBeenCalled(); // el disco no se toca
+  });
+
+  it('si falla al recrearlo, NO borra el disco (ya existía antes de este intento)', async () => {
+    const { k8s, mocks } = fakeK8s({ pvcs: [pvc('t1')] });
+    mocks.waitForPodRunning.mockRejectedValueOnce(
+      new Error('sin cupo en el nodo'),
+    );
+    await expect(
+      service(k8s).start('t1', { files: {}, ttlSeconds: 60 }),
+    ).rejects.toThrow('sin cupo en el nodo');
+    expect(mocks.deletePvc).not.toHaveBeenCalled();
+  });
+});
+
+describe('TerminalWorkspaceService.exec', () => {
   async function run(
     k8sOptions: Parameters<typeof fakeK8s>[0],
     command = 'npm run build',
@@ -280,7 +408,7 @@ describe('TerminalSessionService.exec', () => {
     ).toBe(false);
   });
 
-  it('un comando a la vez por sesión', async () => {
+  it('un comando a la vez por proyecto', async () => {
     const fake = fakeK8s({ pods: [pod('t1')] });
     let release: (code: number) => void = () => undefined;
     fake.mocks.execInPod.mockImplementationOnce(() =>
@@ -309,7 +437,7 @@ describe('TerminalSessionService.exec', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('sesión inexistente, vencida o sin arrancar: error claro y no se ejecuta nada', async () => {
+  it('proyecto sin disco: error claro (404), no runningo ejecuta nada', async () => {
     const missing = fakeK8s();
     await expect(
       service(missing.k8s).exec(
@@ -317,8 +445,22 @@ describe('TerminalSessionService.exec', () => {
         { command: 'ls', timeoutSeconds: 10 },
         () => undefined,
       ),
-    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    ).rejects.toBeInstanceOf(TerminalWorkspaceNotFoundError);
+    expect(missing.mocks.execInPod).not.toHaveBeenCalled();
+  });
 
+  it('con disco pero sin pod (nunca se inició, o se detuvo): pide iniciarlo (409), distinto de "no existe" (404)', async () => {
+    const stopped = fakeK8s({ pvcs: [pvc('t1')] });
+    await expect(
+      service(stopped.k8s).exec(
+        't1',
+        { command: 'ls', timeoutSeconds: 10 },
+        () => undefined,
+      ),
+    ).rejects.toBeInstanceOf(TerminalNotRunningError);
+  });
+
+  it('vencido o sin arrancar: error claro y no se ejecuta nada', async () => {
     const expired = fakeK8s({
       pods: [
         pod('t1', { expiresAt: new Date(Date.now() - 1000).toISOString() }),
@@ -343,7 +485,22 @@ describe('TerminalSessionService.exec', () => {
     ).rejects.toBeInstanceOf(TerminalNotRunningError);
   });
 
-  it('un pod con otro tipo de label no se trata como sesión de terminal', async () => {
+  it('un pod al que ya se le pidió borrarse (deletionTimestamp) no acepta comandos, aunque siga en phase Running', async () => {
+    const terminating = pod('t1');
+    if (terminating.metadata)
+      terminating.metadata.deletionTimestamp = new Date();
+    const fake = fakeK8s({ pods: [terminating] });
+    await expect(
+      service(fake.k8s).exec(
+        't1',
+        { command: 'ls', timeoutSeconds: 10 },
+        () => undefined,
+      ),
+    ).rejects.toBeInstanceOf(TerminalNotRunningError);
+    expect(fake.mocks.execInPod).not.toHaveBeenCalled();
+  });
+
+  it('un pod con otro tipo de label no se trata como terminal de un proyecto', async () => {
     const preview: V1Pod = {
       metadata: {
         name: 'agent-terminal-x',
@@ -358,7 +515,7 @@ describe('TerminalSessionService.exec', () => {
         { command: 'ls', timeoutSeconds: 10 },
         () => undefined,
       ),
-    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    ).rejects.toBeInstanceOf(TerminalWorkspaceNotFoundError);
   });
 
   it('si la conexión cae, informa un evento error (no cuelga ni lanza)', async () => {
@@ -373,7 +530,52 @@ describe('TerminalSessionService.exec', () => {
   });
 });
 
-describe('TerminalSessionService.expose', () => {
+describe('TerminalWorkspaceService: actividad (para el reaper por inactividad)', () => {
+  it('exec toca la actividad del pod, pero no más seguido que cada 60 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date('2026-09-28T10:00:00.000Z');
+      vi.setSystemTime(start);
+      const fake = fakeK8s({
+        pods: [pod('t1')],
+        scripts: [() => 0, () => 0, () => 0],
+      });
+      const svc = service(fake.k8s);
+
+      await svc.exec(
+        't1',
+        { command: 'ls', timeoutSeconds: 10 },
+        () => undefined,
+      );
+      expect(fake.patchCalls).toHaveLength(1);
+      expect(fake.patchCalls[0]).toEqual({
+        name: 'agent-terminal-t1',
+        key: 'jin.io/last-activity-at',
+        value: start.toISOString(),
+      });
+
+      vi.setSystemTime(new Date(start.getTime() + 30_000)); // dentro del throttle
+      await svc.exec(
+        't1',
+        { command: 'ls', timeoutSeconds: 10 },
+        () => undefined,
+      );
+      expect(fake.patchCalls).toHaveLength(1);
+
+      vi.setSystemTime(new Date(start.getTime() + 61_000)); // ya pasó
+      await svc.exec(
+        't1',
+        { command: 'ls', timeoutSeconds: 10 },
+        () => undefined,
+      );
+      expect(fake.patchCalls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('TerminalWorkspaceService.expose', () => {
   const exposeRequest = {
     dir: 'dist',
     port: 8080,
@@ -470,7 +672,7 @@ describe('TerminalSessionService.expose', () => {
   });
 });
 
-describe('TerminalSessionService: servidores y vista previa', () => {
+describe('TerminalWorkspaceService: servidores en segundo plano y vista previa', () => {
   it('lanzar un servidor manda el comando y el puerto como argumentos (nunca dentro del script)', async () => {
     const { k8s, calls } = fakeK8s({
       pods: [pod('t1')],
@@ -498,17 +700,17 @@ describe('TerminalSessionService: servidores y vista previa', () => {
     expect(command[2]).not.toContain('reboot');
   });
 
-  it('listar, detener y ver el log de un servidor exigen una sesión corriendo', async () => {
+  it('listar, detener y ver el log de un servidor exigen un pod corriendo', async () => {
     const missing = fakeK8s();
     await expect(
       service(missing.k8s).listServices('nope'),
-    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    ).rejects.toBeInstanceOf(TerminalWorkspaceNotFoundError);
     await expect(
       service(missing.k8s).stopService('nope', 5173),
-    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    ).rejects.toBeInstanceOf(TerminalWorkspaceNotFoundError);
     await expect(
       service(missing.k8s).serviceLogs('nope', 5173),
-    ).rejects.toBeInstanceOf(TerminalNotFoundError);
+    ).rejects.toBeInstanceOf(TerminalWorkspaceNotFoundError);
     expect(missing.mocks.execInPod).not.toHaveBeenCalled();
   });
 
@@ -553,7 +755,7 @@ describe('TerminalSessionService: servidores y vista previa', () => {
     await expect(service(bad.k8s).listServices('t1')).rejects.toThrow(/boom/);
   });
 
-  it('el proxy reenvía a la sesión del owner y traduce un fallo de red a 502; una ruta no permitida a 400', async () => {
+  it('el proxy reenvía al proyecto y traduce un fallo de red a 502; una ruta no permitida a 400', async () => {
     const proxyToPod = vi
       .fn()
       .mockResolvedValue({ status: 200, headers: {}, body: {} });
@@ -573,36 +775,30 @@ describe('TerminalSessionService: servidores y vista previa', () => {
     expect((bad as { httpStatus: number }).httpStatus).toBe(400);
 
     await expect(svc.proxy('nope', 5173, request)).rejects.toBeInstanceOf(
-      TerminalNotFoundError,
+      TerminalWorkspaceNotFoundError,
     );
   });
 });
 
-describe('TerminalSessionService.list / stop', () => {
-  it('un pod que se está borrando no cuenta: ni se lista ni ocupa el cupo de una sesión nueva', async () => {
+describe('TerminalWorkspaceService.list', () => {
+  it('un pod que se está borrando no cuenta: ni se lista ni ocupa el cupo de un pod nuevo', async () => {
     const terminating = pod('t1');
     if (terminating.metadata)
       terminating.metadata.deletionTimestamp = new Date();
     const { k8s, mocks } = fakeK8s({ pods: [terminating] });
     expect(await service(k8s).list()).toEqual([]);
     await expect(
-      service(k8s).start({ files: {}, ttlSeconds: 60 }),
+      service(k8s).start('otro', { files: {}, ttlSeconds: 60 }),
     ).resolves.toBeDefined();
     expect(mocks.createPod).toHaveBeenCalledTimes(1);
   });
 
-  it('lista el estado, el TTL y el link publicado de cada sesión', async () => {
-    const svc: V1Service = {
+  it('un disco sin pod aparece "stopped", sin TTL ni actividad; con pod trae todo, ordenado por creado más reciente', async () => {
+    const svcResource: V1Service = {
       metadata: {
         name: 'agent-service-t1',
         labels: { 'jin.io/service-id': 't1' },
         annotations: { 'jin.io/slug': 'sitio-abc123' },
-      },
-    };
-    const otherPreview: V1Service = {
-      metadata: {
-        name: 'agent-service-zzz',
-        labels: { 'jin.io/service-id': 'zzz' },
       },
     };
     const { k8s } = fakeK8s({
@@ -610,33 +806,76 @@ describe('TerminalSessionService.list / stop', () => {
         pod('t1'),
         pod('t2', { phase: 'Pending' }),
         pod('t3', { expiresAt: new Date(Date.now() - 1000).toISOString() }),
-        pod('t4', { phase: 'Failed' }),
       ],
-      services: [svc, otherPreview],
+      pvcs: [
+        pvc('t1', { createdAt: '2026-09-27T00:00:00.000Z' }),
+        pvc('t2', { createdAt: '2026-09-28T00:00:00.000Z' }),
+        pvc('t3', { createdAt: '2026-09-26T00:00:00.000Z' }),
+        pvc('t5-parado', { createdAt: '2026-09-29T00:00:00.000Z' }),
+      ],
+      services: [svcResource],
     });
     const list = await service(k8s).list();
-    expect(list.map((s) => [s.id, s.status])).toEqual([
-      ['t1', 'running'],
-      ['t2', 'starting'],
-      ['t3', 'expired'],
-      ['t4', 'failed'],
-    ]);
-    expect(list[0]?.exposure).toEqual({
+
+    expect(list.map((w) => w.id)).toEqual(['t5-parado', 't2', 't1', 't3']);
+    const stopped = list.find((w) => w.id === 't5-parado');
+    expect(stopped).toMatchObject({
+      status: 'stopped',
+      expiresAt: null,
+      requestId: null,
+      exposure: null,
+      lastActivityAt: null,
+    });
+    const running = list.find((w) => w.id === 't1');
+    expect(running?.status).toBe('running');
+    expect(running?.exposure).toEqual({
       slug: 'sitio-abc123',
       url: 'https://sitio-abc123.jinserver.com',
     });
-    expect(list[1]?.exposure).toBeNull();
+    expect(list.find((w) => w.id === 't2')?.status).toBe('starting');
+    expect(list.find((w) => w.id === 't3')?.status).toBe('expired');
   });
+});
 
-  it('cerrar corta primero el tráfico y destruye el pod al final, y no falla si ya no existe', async () => {
-    const { k8s, order } = fakeK8s();
-    await service(k8s).stop('t1');
+describe('TerminalWorkspaceService.list — PVC en proceso de borrado', () => {
+  it('un disco al que ya se le pidió borrarse no cuenta como que el proyecto sigue ahí', async () => {
+    const deleting = pvc('t1');
+    if (deleting.metadata) deleting.metadata.deletionTimestamp = new Date();
+    const { k8s } = fakeK8s({ pvcs: [deleting] });
+    expect(await service(k8s).list()).toEqual([]);
+  });
+});
+
+describe('TerminalWorkspaceService.stopPod / deleteWorkspace', () => {
+  it('detener corta primero el tráfico y destruye el pod al final, y NUNCA toca el disco', async () => {
+    const { k8s, order, mocks } = fakeK8s();
+    await service(k8s).stopPod('t1');
     expect(order).toEqual([
       'deleteIngressRoute',
       'deleteService',
       'deleteNetworkPolicy',
       'deleteNetworkPolicy',
       'deletePod',
+    ]);
+    expect(mocks.deletePvc).not.toHaveBeenCalled();
+  });
+
+  it('no falla si ya no existe nada', async () => {
+    const { k8s } = fakeK8s();
+    await expect(service(k8s).stopPod('nope')).resolves.toBeUndefined();
+    await expect(service(k8s).deleteWorkspace('nope')).resolves.toBeUndefined();
+  });
+
+  it('eliminar el workspace detiene el pod (si corre) y DESPUÉS borra el disco', async () => {
+    const { k8s, order } = fakeK8s({ pods: [pod('t1')], pvcs: [pvc('t1')] });
+    await service(k8s).deleteWorkspace('t1');
+    expect(order).toEqual([
+      'deleteIngressRoute',
+      'deleteService',
+      'deleteNetworkPolicy',
+      'deleteNetworkPolicy',
+      'deletePod',
+      'deletePvc',
     ]);
   });
 });

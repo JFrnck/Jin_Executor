@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,7 +13,7 @@ import {
 import { K8sService } from '../k8s/k8s.service';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
 import { TerminalReaperService } from './terminal-reaper.service';
-import { TerminalSessionService } from './terminal.service';
+import { TerminalWorkspaceService } from './terminal.service';
 import type { TerminalStreamEvent } from './terminal.types';
 
 const NODE_IMAGE = 'docker.io/library/node:22-alpine';
@@ -67,12 +68,13 @@ import { readFileSync } from 'node:fs';
 createServer((req, res) => res.end(readFileSync('index.html'))).listen(8080, '0.0.0.0');
 `;
 
-describe('TerminalSessionService (integración, K3s real)', () => {
+describe('TerminalWorkspaceService (integración, K3s real)', () => {
   let testK3s: TestK3s;
   let kubeconfigTmpDir: string;
-  let terminal: TerminalSessionService;
+  let terminal: TerminalWorkspaceService;
   let reaper: TerminalReaperService;
   let k8s: K8sService;
+  let baseConfigValues: Record<string, unknown>;
 
   beforeAll(async () => {
     testK3s = await startTestK3s([NODE_IMAGE]);
@@ -84,7 +86,7 @@ describe('TerminalSessionService (integración, K3s real)', () => {
     const kubeconfigPath = path.join(kubeconfigTmpDir, 'kubeconfig.yaml');
     writeFileSync(kubeconfigPath, testK3s.kubeConfigString);
 
-    const configService = new ConfigService({
+    baseConfigValues = {
       KUBECONFIG_PATH: kubeconfigPath,
       AGENTS_SANDBOX_NAMESPACE,
       TERMINAL_NODE_IMAGE: NODE_IMAGE,
@@ -94,14 +96,17 @@ describe('TerminalSessionService (integración, K3s real)', () => {
       TERMINAL_DEFAULT_TTL_SECONDS: 3600,
       TERMINAL_MAX_TTL_SECONDS: 14400,
       TERMINAL_MAX_CONCURRENT: 1,
-    });
+      TERMINAL_MAX_WORKSPACES: 10,
+      TERMINAL_WORKSPACE_STORAGE_GI: 1,
+    };
+    const configService = new ConfigService(baseConfigValues);
     k8s = new K8sService(configService);
-    terminal = new TerminalSessionService(
+    terminal = new TerminalWorkspaceService(
       new RbacValidatorService(),
       k8s,
       configService,
     );
-    reaper = new TerminalReaperService(terminal);
+    reaper = new TerminalReaperService(terminal, configService);
   }, 300_000);
 
   afterAll(async () => {
@@ -129,8 +134,9 @@ describe('TerminalSessionService (integración, K3s real)', () => {
     };
   }
 
-  it('sesión completa: sube archivos, corre comandos, conserva el cd, exporta, publica y cierra', async () => {
-    const info = await terminal.start({
+  it('proyecto completo: sube archivos, corre comandos, conserva el cd, exporta, publica y cierra', async () => {
+    const id = randomUUID();
+    const info = await terminal.start(id, {
       files: {
         'index.html': '<h1>hola</h1>',
         'src/main.js': 'console.log(40 + 2)',
@@ -139,79 +145,113 @@ describe('TerminalSessionService (integración, K3s real)', () => {
     });
     expect(info.status).toBe('running');
 
-    // Los archivos subidos están, y el pod corre como usuario sin privilegios.
-    const listing = await run(info.id, 'ls && id -u');
-    expect(listing.exit?.code).toBe(0);
-    expect(listing.out).toContain('index.html');
-    expect(listing.out.trim().endsWith('1000')).toBe(true);
+    try {
+      // Los archivos subidos están (el disco monta con permisos de escritura
+      // para el usuario 1000 — fsGroup sobre un PVC local-path), y el pod
+      // corre sin privilegios.
+      const listing = await run(id, 'ls && id -u');
+      expect(listing.exit?.code).toBe(0);
+      expect(listing.out).toContain('index.html');
+      expect(listing.out.trim().endsWith('1000')).toBe(true);
 
-    // node corre código del proyecto; stderr y el código de salida llegan aparte.
-    expect((await run(info.id, 'node src/main.js')).out).toBe('42\n');
-    const failing = await run(info.id, 'echo malo >&2; exit 3');
-    expect(failing.err).toBe('malo\n');
-    expect(failing.exit?.code).toBe(3);
+      // node corre código del proyecto; stderr y el código de salida llegan aparte.
+      expect((await run(id, 'node src/main.js')).out).toBe('42\n');
+      const failing = await run(id, 'echo malo >&2; exit 3');
+      expect(failing.err).toBe('malo\n');
+      expect(failing.exit?.code).toBe(3);
 
-    // Cada comando es una shell nueva, pero el directorio se conserva.
-    await run(info.id, 'mkdir -p build && cd build');
-    expect((await run(info.id, 'pwd')).out.trim()).toBe('/workspace/build');
+      // Cada comando es una shell nueva, pero el directorio se conserva.
+      await run(id, 'mkdir -p build && cd build');
+      expect((await run(id, 'pwd')).out.trim()).toBe('/workspace/build');
 
-    // Sin internet: la única salida sería el proxy de npm (que acá no existe).
-    const net = await run(
-      info.id,
-      'wget -q -T 3 -O /dev/null http://1.1.1.1/',
-      15,
-    );
-    expect(net.exit?.code).not.toBe(0);
+      // Sin internet: la única salida sería el proxy de npm (que acá no existe).
+      const net = await run(
+        id,
+        'wget -q -T 3 -O /dev/null http://1.1.1.1/',
+        15,
+      );
+      expect(net.exit?.code).not.toBe(0);
 
-    // Lo que se genera dentro se puede traer de vuelta al editor.
-    await run(
-      info.id,
-      'cd /workspace && mkdir -p out && echo "<h1>build</h1>" > out/index.html',
-    );
-    const exported = await terminal.exportFiles(info.id, '.');
-    expect(Object.keys(exported.files).sort()).toEqual([
-      'index.html',
-      'out/index.html',
-      'src/main.js',
-    ]);
+      // Lo que se genera dentro se puede traer de vuelta al editor.
+      await run(
+        id,
+        'cd /workspace && mkdir -p out && echo "<h1>build</h1>" > out/index.html',
+      );
+      const exported = await terminal.exportFiles(id, '.');
+      expect(Object.keys(exported.files).sort()).toEqual([
+        'index.html',
+        'out/index.html',
+        'src/main.js',
+      ]);
 
-    // Publicar sin build falla claro; con build, el servidor responde dentro del pod.
-    await expect(
-      terminal.expose(info.id, {
-        dir: 'dist',
+      // Publicar sin build falla claro; con build, el servidor responde dentro del pod.
+      await expect(
+        terminal.expose(id, {
+          dir: 'dist',
+          port: 8080,
+          serverSource: TEST_SERVER_SOURCE,
+        }),
+      ).rejects.toThrow(/corre el build primero/);
+      const exposure = await terminal.expose(id, {
+        dir: 'out',
         port: 8080,
+        slugHint: 'mi-build',
         serverSource: TEST_SERVER_SOURCE,
-      }),
-    ).rejects.toThrow(/corre el build primero/);
-    const exposure = await terminal.expose(info.id, {
-      dir: 'out',
-      port: 8080,
-      slugHint: 'mi-build',
-      serverSource: TEST_SERVER_SOURCE,
-    });
-    expect(exposure.url).toMatch(
-      /^https:\/\/mi-build-[a-z0-9]{6}\.jinserver\.com$/,
-    );
-    expect((await terminal.list())[0]?.exposure?.slug).toBe(exposure.slug);
-    expect(
-      (await run(info.id, 'wget -q -O - http://127.0.0.1:8080/')).out,
-    ).toContain('<h1>build</h1>');
-
-    // Cierra todo: pod, Service y policies.
-    await terminal.stop(info.id);
-    expect(await terminal.list()).toEqual([]);
+      });
+      expect(exposure.url).toMatch(
+        /^https:\/\/mi-build-[a-z0-9]{6}\.jinserver\.com$/,
+      );
+      expect(
+        (await terminal.list()).find((w) => w.id === id)?.exposure?.slug,
+      ).toBe(exposure.slug);
+      expect(
+        (await run(id, 'wget -q -O - http://127.0.0.1:8080/')).out,
+      ).toContain('<h1>build</h1>');
+    } finally {
+      // Elimina TODO (pod + disco): este proyecto no se retoma en otro test.
+      await terminal.deleteWorkspace(id);
+    }
+    expect((await terminal.list()).find((w) => w.id === id)).toBeUndefined();
     const services = await testK3s.coreApi.listNamespacedService({
       namespace: AGENTS_SANDBOX_NAMESPACE,
     });
     expect(
-      services.items.filter((service) =>
-        service.metadata?.name?.includes(info.id),
-      ),
+      services.items.filter((service) => service.metadata?.name?.includes(id)),
     ).toEqual([]);
   }, 240_000);
 
+  it('el disco sobrevive a detener el pod: al reanudar, el proyecto sigue tal como se dejó', async () => {
+    const id = randomUUID();
+    const first = await terminal.start(id, {
+      files: { 'notas.txt': 'primera línea\n' },
+      ttlSeconds: 3600,
+    });
+    try {
+      await run(id, 'echo "segunda línea" >> notas.txt && mkdir -p pkg');
+
+      // Detener el pod: el disco (PVC) NO se toca.
+      await terminal.stopPod(id);
+      const stopped = (await terminal.list()).find((w) => w.id === id);
+      expect(stopped).toMatchObject({ id, status: 'stopped', expiresAt: null });
+      await expect(run(id, 'ls')).rejects.toThrow();
+
+      // Reanudar: mismo id, sin mandar archivos — el pod nuevo ve el disco de antes.
+      const second = await terminal.start(id, { files: {}, ttlSeconds: 3600 });
+      expect(second.status).toBe('running');
+      // El disco es el mismo: "creado" no cambió al reanudar.
+      expect(second.createdAt).toBe(first.createdAt);
+
+      const contents = await run(id, 'cat notas.txt && ls pkg');
+      expect(contents.out).toBe('primera línea\nsegunda línea\n');
+      expect(contents.exit?.code).toBe(0); // `ls pkg` no falla: la carpeta sigue ahí
+    } finally {
+      await terminal.deleteWorkspace(id);
+    }
+  }, 240_000);
+
   it('vista previa en vivo: un servidor en segundo plano sobrevive al comando y se ve a través del API server, con las NetworkPolicies puestas', async () => {
-    const info = await terminal.start({
+    const id = randomUUID();
+    const info = await terminal.start(id, {
       files: {
         'server.js': `
           require('http').createServer((req, res) => {
@@ -231,16 +271,17 @@ describe('TerminalSessionService (integración, K3s real)', () => {
       },
       ttlSeconds: 3600,
     });
+    expect(info.status).toBe('running');
     try {
-      const started = await terminal.startService(info.id, {
+      const started = await terminal.startService(id, {
         command: 'node server.js',
         port: 5173,
       });
       expect(started.status).toBe('listening');
 
-      // Un comando aparte no lo mata: el servidor es de la sesión, no del comando.
-      await run(info.id, 'echo otro comando');
-      expect((await terminal.listServices(info.id))[0]).toMatchObject({
+      // Un comando aparte no lo mata: el servidor es del proyecto, no del comando.
+      await run(id, 'echo otro comando');
+      expect((await terminal.listServices(id))[0]).toMatchObject({
         port: 5173,
         running: true,
         listening: true,
@@ -255,7 +296,7 @@ describe('TerminalSessionService (integración, K3s real)', () => {
         >;
       };
 
-      const get = await terminal.proxy(info.id, 5173, {
+      const get = await terminal.proxy(id, 5173, {
         method: 'GET',
         path: '/src/main.js?t=1',
         headers: { host: 'localhost:5173', 'accept-encoding': 'identity' },
@@ -270,7 +311,7 @@ describe('TerminalSessionService (integración, K3s real)', () => {
       });
 
       // El API server reescribe los enlaces del HTML; el Executor lo deshace.
-      const page = await terminal.proxy(info.id, 5173, {
+      const page = await terminal.proxy(id, 5173, {
         method: 'GET',
         path: '/pagina',
         headers: { host: 'localhost:5173', 'accept-encoding': 'identity' },
@@ -281,7 +322,7 @@ describe('TerminalSessionService (integración, K3s real)', () => {
         '<script type="module" src="/@vite/client"></script><link href="/favicon.svg"><a href="/">inicio</a>',
       );
 
-      const post = await terminal.proxy(info.id, 5173, {
+      const post = await terminal.proxy(id, 5173, {
         method: 'POST',
         path: '/api/items',
         headers: { host: 'localhost:5173', 'content-type': 'application/json' },
@@ -294,48 +335,51 @@ describe('TerminalSessionService (integración, K3s real)', () => {
 
       // Un puerto donde no hay nada: el API server responde con error, no cuelga.
       const nothing = await terminal
-        .proxy(info.id, 5999, { method: 'GET', path: '/', headers: {} })
+        .proxy(id, 5999, { method: 'GET', path: '/', headers: {} })
         .then((res) => res.status)
         .catch(() => 502);
       expect(nothing).toBeGreaterThanOrEqual(500);
 
       // Detener el servidor lo apaga de verdad.
-      await terminal.stopService(info.id, 5173);
-      expect(await terminal.listServices(info.id)).toEqual([]);
+      await terminal.stopService(id, 5173);
+      expect(await terminal.listServices(id)).toEqual([]);
       const after = await terminal
-        .proxy(info.id, 5173, { method: 'GET', path: '/', headers: {} })
+        .proxy(id, 5173, { method: 'GET', path: '/', headers: {} })
         .then((res) => res.status)
         .catch(() => 502);
       expect(after).toBeGreaterThanOrEqual(500);
     } finally {
-      await terminal.stop(info.id);
+      await terminal.deleteWorkspace(id);
     }
   }, 180_000);
 
   it('el timeout del pod mata el comando (KILL) y avisa con 137', async () => {
-    const info = await terminal.start({ files: {}, ttlSeconds: 3600 });
+    const id = randomUUID();
+    await terminal.start(id, { files: {}, ttlSeconds: 3600 });
     try {
       const started = Date.now();
-      const result = await run(info.id, 'sleep 60', 2);
+      const result = await run(id, 'sleep 60', 2);
       expect(result.exit?.code).toBe(137);
       expect(Date.now() - started).toBeLessThan(20_000);
     } finally {
-      await terminal.stop(info.id);
+      await terminal.deleteWorkspace(id);
     }
   }, 120_000);
 
-  it('el límite de una sesión a la vez se hace cumplir y el reaper cierra la vencida', async () => {
-    const info = await terminal.start({ files: {}, ttlSeconds: 3600 });
+  it('el límite de un pod corriendo a la vez se hace cumplir y el reaper libera el vencido (el disco sigue listado)', async () => {
+    const id = randomUUID();
+    await terminal.start(id, { files: {}, ttlSeconds: 3600 });
     try {
       await expect(
-        terminal.start({ files: {}, ttlSeconds: 60 }),
-      ).rejects.toThrow(/límite/);
+        terminal.start(randomUUID(), { files: {}, ttlSeconds: 60 }),
+      ).rejects.toThrow(/corriendo/);
 
-      // Se vence a mano y el reaper la destruye.
-      const pod = await k8s.readPod(`agent-terminal-${info.id}`);
+      // Se vence a mano y el reaper lo libera (el disco NO desaparece).
+      const podName = `agent-terminal-${id}`;
+      const pod = await k8s.readPod(podName);
       expect(pod.metadata?.annotations?.['jin.io/expires-at']).toBeDefined();
       await testK3s.coreApi.patchNamespacedPod({
-        name: `agent-terminal-${info.id}`,
+        name: podName,
         namespace: AGENTS_SANDBOX_NAMESPACE,
         body: [
           {
@@ -346,9 +390,40 @@ describe('TerminalSessionService (integración, K3s real)', () => {
         ],
       });
       await reaper.reapExpired();
-      await expect(run(info.id, 'ls')).rejects.toThrow();
+      await expect(run(id, 'ls')).rejects.toThrow();
+      expect((await terminal.list()).find((w) => w.id === id)?.status).toBe(
+        'stopped',
+      );
     } finally {
-      await terminal.stop(info.id);
+      await terminal.deleteWorkspace(id);
+    }
+  }, 120_000);
+
+  it('el reaper libera un pod inactivo (sin comandos) pero conserva su disco', async () => {
+    const idleConfig = new ConfigService({
+      ...baseConfigValues,
+      TERMINAL_IDLE_TIMEOUT_SECONDS: 1,
+    });
+    const idleReaper = new TerminalReaperService(terminal, idleConfig);
+
+    const id = randomUUID();
+    await terminal.start(id, { files: {}, ttlSeconds: 3600 });
+    try {
+      await run(id, 'echo actividad'); // deja "última actividad" en el pod
+      await new Promise((resolve) => setTimeout(resolve, 2000)); // pasa el minuto... o el segundo, acá
+
+      await idleReaper.reapExpired();
+
+      const workspace = (await terminal.list()).find((w) => w.id === id);
+      expect(workspace?.status).toBe('stopped'); // el pod se liberó...
+      await expect(run(id, 'ls')).rejects.toThrow();
+
+      // ...pero el disco sigue: reanudar retoma el mismo proyecto.
+      const resumed = await terminal.start(id, { files: {}, ttlSeconds: 3600 });
+      expect(resumed.status).toBe('running');
+      expect(resumed.createdAt).toBe(workspace?.createdAt);
+    } finally {
+      await terminal.deleteWorkspace(id);
     }
   }, 120_000);
 });

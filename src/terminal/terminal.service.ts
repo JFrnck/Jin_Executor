@@ -1,14 +1,14 @@
-import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { V1Pod } from '@kubernetes/client-node';
+import type { V1PersistentVolumeClaim, V1Pod } from '@kubernetes/client-node';
 import { K8sService, type PodExecution } from '../k8s/k8s.service';
 import { collectExec } from '../k8s/pod-exec';
 import { podProxyPrefix, undoApiServerRewrite } from '../k8s/pod-proxy';
 import type { PodProxyResponse } from '../k8s/k8s.service';
 import {
   JINSERVER_TLS_SECRET_NAME,
+  LAST_ACTIVITY_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
@@ -16,8 +16,10 @@ import {
   SERVICE_TYPE_LABEL,
   TERMINAL_CONTAINER_NAME,
   TERMINAL_TYPE_VALUE,
+  WORKSPACE_TYPE_VALUE,
   servicePodNameForId,
   terminalPodNameForId,
+  terminalWorkspacePvcNameForId,
 } from '../k8s/labels';
 import { buildServiceIngressNetworkPolicy } from '../k8s/network-policy.builder';
 import {
@@ -27,6 +29,7 @@ import {
 import {
   buildTerminalEgressPolicy,
   buildTerminalPodSpec,
+  buildTerminalWorkspacePvc,
   terminalEgressPolicyName,
 } from '../k8s/terminal-pod-spec.builder';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
@@ -38,8 +41,9 @@ import {
   TerminalExposeError,
   TerminalFileTransferError,
   TerminalLimitError,
-  TerminalNotFoundError,
   TerminalNotRunningError,
+  TerminalWorkspaceLimitError,
+  TerminalWorkspaceNotFoundError,
 } from './errors';
 import type {
   ExecTerminalRequest,
@@ -60,19 +64,23 @@ import type {
   TerminalServiceStart,
   TerminalExportResult,
   TerminalExposure,
-  TerminalSessionInfo,
   TerminalStatus,
   TerminalStreamEvent,
+  TerminalWorkspaceInfo,
 } from './terminal.types';
 
 const ACTIVE_TERMINAL_SELECTOR = `${SERVICE_TYPE_LABEL}=${TERMINAL_TYPE_VALUE}`;
+const WORKSPACE_SELECTOR = `${SERVICE_TYPE_LABEL}=${WORKSPACE_TYPE_VALUE}`;
 /** Tope de salida que se reenvía por comando; pasado esto se corta y se avisa. */
 const MAX_OUTPUT_BYTES = 512 * 1024;
 /** Tiempo para que el pod arranque (la primera vez hay que bajar la imagen). */
 const START_TIMEOUT_MS = 120_000;
-/** Tiempo para las operaciones internas (subir, exportar, arrancar el servidor). */
+/** Tiempo para que un pod vencido/caído termine de irse antes de recrearlo (mismo nombre). */
+const POD_GONE_TIMEOUT_MS = 30_000;
 const SERVER_CHECK_ATTEMPTS = 6;
 const SERVER_CHECK_INTERVAL_MS = 300;
+/** No se toca la annotation de actividad más seguido que esto (evita hablarle de más al API server). */
+const TOUCH_THROTTLE_MS = 60_000;
 
 function isNotFound(error: unknown): boolean {
   return (
@@ -87,7 +95,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isoOf(value: Date | string | undefined): string {
+  if (!value) return new Date(0).toISOString();
+  return typeof value === 'string' ? value : value.toISOString();
+}
+
 function statusOf(pod: V1Pod, now: number): TerminalStatus {
+  // Un pod al que ya se le pidió borrarse sigue reportando `phase: Running`
+  // durante su `terminationGracePeriodSeconds` (el proceso sigue vivo un
+  // instante): sin este chequeo, exec()/proxy() seguían hablándole a un pod
+  // que ya no debería aceptar nada (hallazgo con K3s real).
+  if (pod.metadata?.deletionTimestamp) return 'failed';
   const expiresAt = pod.metadata?.annotations?.[SERVICE_EXPIRES_AT_ANNOTATION];
   if (expiresAt && new Date(expiresAt).getTime() <= now) return 'expired';
   switch (pod.status?.phase) {
@@ -107,12 +125,18 @@ interface Collected {
 }
 
 /**
- * Sesiones de terminal del owner (ADR 0016). Kubernetes es el store de estado,
- * como en `PreviewServiceLifecycleService`: sin tabla propia.
+ * Un workspace por proyecto (2026-09-28, ADR 0016 ampliada): un disco (PVC)
+ * que sobrevive a que su pod se destruya y se vuelva a crear. Kubernetes
+ * sigue siendo el store de estado — sin tabla propia — pero ahora hay DOS
+ * recursos por proyecto (PVC + Pod, cuando corre), no solo el pod.
+ *
+ * Solo un pod de terminal corre A LA VEZ (`TERMINAL_MAX_CONCURRENT`), pero
+ * puede haber varios discos guardados (`TERMINAL_MAX_WORKSPACES`): el disco
+ * no cuesta CPU/memoria, así que no compite por la cuota del clúster.
  */
 @Injectable()
-export class TerminalSessionService {
-  private readonly logger = new Logger(TerminalSessionService.name);
+export class TerminalWorkspaceService {
+  private readonly logger = new Logger(TerminalWorkspaceService.name);
   private readonly image: string;
   private readonly registryUrl: string;
   private readonly registryNamespace: string;
@@ -120,8 +144,12 @@ export class TerminalSessionService {
   private readonly defaultTtlSeconds: number;
   private readonly maxTtlSeconds: number;
   private readonly maxConcurrent: number;
-  /** Sesiones con un comando en curso (uno a la vez por sesión). */
+  private readonly maxWorkspaces: number;
+  private readonly workspaceStorageSize: string;
+  /** Workspaces con un comando en curso (uno a la vez por workspace). */
   private readonly busy = new Set<string>();
+  /** Último `patchPodAnnotation` de actividad por workspace (throttle en memoria). */
+  private readonly lastTouch = new Map<string, number>();
 
   constructor(
     private readonly rbacValidator: RbacValidatorService,
@@ -153,105 +181,195 @@ export class TerminalSessionService {
       'TERMINAL_MAX_CONCURRENT',
       1,
     );
+    this.maxWorkspaces = configService.get<number>(
+      'TERMINAL_MAX_WORKSPACES',
+      10,
+    );
+    const storageGi = configService.get<number>(
+      'TERMINAL_WORKSPACE_STORAGE_GI',
+      3,
+    );
+    this.workspaceStorageSize = `${storageGi}Gi`;
   }
 
   // ── Ciclo de vida ──────────────────────────────────────────────────────
 
-  async start(request: StartTerminalRequest): Promise<TerminalSessionInfo> {
+  /**
+   * Inicia (o reanuda) el pod de un workspace. Si ya está corriendo, no crea
+   * nada: devuelve lo que hay. Si el disco no existe todavía, lo crea (y solo
+   * entonces cuentan `files` y el tope de workspaces); si ya existía, `files`
+   * se ignora — no se pisa lo que el owner dejó en el disco.
+   */
+  async start(
+    workspaceId: string,
+    request: StartTerminalRequest,
+  ): Promise<TerminalWorkspaceInfo> {
     this.rbacValidator.validate('startTerminalSession');
 
-    const active = (await this.listPods()).filter(
-      (pod) => statusOf(pod, Date.now()) !== 'failed',
-    );
-    if (active.length >= this.maxConcurrent) {
+    const podName = terminalPodNameForId(workspaceId);
+    const pvc = await this.readPvcOrNull(workspaceId);
+    const pod = await this.readPodOrNull(podName);
+
+    if (pod) {
+      const phase = statusOf(pod, Date.now());
+      if (phase === 'running' || phase === 'starting') {
+        await this.touchActivity(workspaceId, podName);
+        return this.infoFrom(workspaceId, pod, pvc, null);
+      }
+      // Vencido, caído, o ya borrándose: hay que esperar a que termine de irse
+      // ANTES de crear uno nuevo con el mismo nombre — Kubernetes no deja
+      // crear un objeto mientras el anterior sigue "Terminating" (409,
+      // hallazgo con K3s real: statusOf() ya lo detecta como no-corriendo,
+      // pero el objeto tarda un instante en desaparecer de verdad).
+      await this.stopPod(workspaceId);
+      await this.k8s.waitForPodGone(podName, POD_GONE_TIMEOUT_MS);
+    }
+
+    const runningCount = (await this.listRunningPods()).length;
+    if (runningCount >= this.maxConcurrent) {
       throw new TerminalLimitError(this.maxConcurrent);
     }
 
-    const terminalId = randomUUID();
-    // Nunca se confía en el ttl del request tal cual: el cap duro se aplica acá.
+    const isNewWorkspace = !pvc;
+    if (isNewWorkspace) {
+      const count = (await this.k8s.listPvcsByLabel(WORKSPACE_SELECTOR)).length;
+      if (count >= this.maxWorkspaces) {
+        throw new TerminalWorkspaceLimitError(this.maxWorkspaces);
+      }
+    }
+
     const ttlSeconds = Math.min(
       Math.max(request.ttlSeconds || this.defaultTtlSeconds, 1),
       this.maxTtlSeconds,
     );
-    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
     const namespace = this.k8s.namespace;
-    const podName = terminalPodNameForId(terminalId);
 
     this.logger.log(
-      `Abriendo sesión de terminal ${podName} (TTL: ${ttlSeconds}s)`,
+      `${isNewWorkspace ? 'Creando' : 'Reanudando'} terminal ${podName} (TTL: ${ttlSeconds}s)`,
     );
+    // Única fuente de verdad para `createdAt`: el `creationTimestamp` que
+    // Kubernetes le puso al PVC. Usar `now` (con milisegundos) para el caso
+    // recién creado hacía que el mismo disco reportara un `createdAt`
+    // distinto la próxima vez que se reanudara (K8s trunca a segundos) —
+    // hallazgo con K3s real.
+    let pvcCreated = pvc;
     try {
+      if (isNewWorkspace) {
+        pvcCreated = await this.k8s.createPvc(
+          buildTerminalWorkspacePvc({
+            workspaceId,
+            namespace,
+            storageSize: this.workspaceStorageSize,
+          }),
+        );
+      }
       await this.k8s.createPod(
         buildTerminalPodSpec({
-          terminalId,
+          workspaceId,
           namespace,
           image: this.image,
           npmRegistryUrl: this.registryUrl,
           expiresAt,
           requestId: request.requestId,
+          now,
         }),
       );
       await this.k8s.createNetworkPolicy(
         buildTerminalEgressPolicy({
-          terminalId,
+          workspaceId,
           namespace,
           registryNamespace: this.registryNamespace,
           registryPort: this.registryPort,
         }),
       );
       await this.k8s.waitForPodRunning(podName, START_TIMEOUT_MS);
-      if (Object.keys(request.files).length > 0) {
+      if (isNewWorkspace && Object.keys(request.files).length > 0) {
         await this.writeFiles(podName, '/workspace', request.files);
       }
     } catch (error) {
-      // Nada a medias: una sesión que no terminó de armarse no queda viva.
-      await this.stop(terminalId);
+      // Nada a medias: un pod que no terminó de armarse no queda vivo. Un
+      // disco recién creado en ESTE intento tampoco (no hay nada del owner
+      // que perder); uno que ya existía de antes se conserva siempre.
+      await this.stopPod(workspaceId);
+      if (isNewWorkspace) {
+        await this.k8s.deletePvc(terminalWorkspacePvcNameForId(workspaceId));
+      }
       throw error;
     }
 
     return {
-      id: terminalId,
+      id: workspaceId,
       status: 'running',
+      createdAt: isoOf(pvcCreated?.metadata?.creationTimestamp),
       expiresAt: expiresAt.toISOString(),
       requestId: request.requestId ?? null,
       exposure: null,
+      lastActivityAt: now.toISOString(),
     };
   }
 
-  async list(): Promise<TerminalSessionInfo[]> {
-    const [pods, exposures] = await Promise.all([
+  /** Todos los workspaces (proyectos con disco propio), corriendo o no. */
+  async list(): Promise<TerminalWorkspaceInfo[]> {
+    const [allPvcs, pods, exposures] = await Promise.all([
+      this.k8s.listPvcsByLabel(WORKSPACE_SELECTOR),
       this.listPods(),
       this.listExposures(),
     ]);
-    const now = Date.now();
-    return pods.map((pod) => {
-      const id = pod.metadata?.labels?.[SERVICE_ID_LABEL] ?? '';
-      return {
-        id,
-        status: statusOf(pod, now),
-        expiresAt:
-          pod.metadata?.annotations?.[SERVICE_EXPIRES_AT_ANNOTATION] ??
-          new Date(0).toISOString(),
-        requestId: pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION] ?? null,
-        exposure: exposures.get(id) ?? null,
-      };
-    });
+    // Un PVC al que ya se le pidió borrarse (deleteWorkspace) sigue existiendo
+    // hasta que el finalizer de protección se libera (el pod que lo usaba
+    // tiene que terminar de irse primero) — mismo criterio que con los pods:
+    // no cuenta como que el proyecto sigue ahí (hallazgo con K3s real).
+    const pvcs = allPvcs.filter(
+      (candidate) => !candidate.metadata?.deletionTimestamp,
+    );
+    const podById = new Map(
+      pods.map((pod) => [pod.metadata?.labels?.[SERVICE_ID_LABEL] ?? '', pod]),
+    );
+    const pvcById = new Map(
+      pvcs.map((pvc) => [pvc.metadata?.labels?.[SERVICE_ID_LABEL] ?? '', pvc]),
+    );
+    const ids = new Set([...pvcById.keys(), ...podById.keys()]);
+    ids.delete('');
+
+    return [...ids]
+      .map((id) =>
+        this.infoFrom(
+          id,
+          podById.get(id) ?? null,
+          pvcById.get(id) ?? null,
+          exposures.get(id) ?? null,
+        ),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   /**
-   * Nunca lanza (mismo criterio que `PreviewServiceLifecycleService.stop`):
-   * cerrar una sesión que ya no existe no es un error. Orden: primero lo que
-   * corta el tráfico y por último el pod.
+   * Detiene el pod de un workspace (el disco NO se toca). Nunca lanza: parar
+   * algo que ya no existe no es un error real. Orden: primero lo que corta
+   * el tráfico y por último el pod.
    */
-  async stop(terminalId: string): Promise<void> {
+  async stopPod(workspaceId: string): Promise<void> {
     this.rbacValidator.validate('stopTerminalSession');
-    const serviceName = servicePodNameForId(terminalId);
+    const serviceName = servicePodNameForId(workspaceId);
     await this.k8s.deleteIngressRoute(serviceName);
     await this.k8s.deleteService(serviceName);
-    await this.k8s.deleteNetworkPolicy(`${terminalId}-ingress`);
-    await this.k8s.deleteNetworkPolicy(terminalEgressPolicyName(terminalId));
-    await this.k8s.deletePod(terminalPodNameForId(terminalId));
-    this.busy.delete(terminalId);
+    await this.k8s.deleteNetworkPolicy(`${workspaceId}-ingress`);
+    await this.k8s.deleteNetworkPolicy(terminalEgressPolicyName(workspaceId));
+    await this.k8s.deletePod(terminalPodNameForId(workspaceId));
+    this.busy.delete(workspaceId);
+    this.lastTouch.delete(workspaceId);
+  }
+
+  /**
+   * Elimina el disco de un workspace: para el pod si estaba corriendo y
+   * borra el PVC. Irreversible — lo que no se trajo al editor se pierde.
+   */
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    this.rbacValidator.validate('deleteTerminalWorkspace');
+    await this.stopPod(workspaceId);
+    await this.k8s.deletePvc(terminalWorkspacePvcNameForId(workspaceId));
   }
 
   // ── Comandos ───────────────────────────────────────────────────────────
@@ -262,16 +380,16 @@ export class TerminalSessionService {
    * conexión cuando el cliente se va; el `timeout` del pod mata el proceso.
    */
   async exec(
-    terminalId: string,
+    workspaceId: string,
     request: ExecTerminalRequest,
     emit: (event: TerminalStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
     this.rbacValidator.validate('runTerminalCommand');
-    if (this.busy.has(terminalId)) throw new TerminalBusyError(terminalId);
-    this.busy.add(terminalId);
+    if (this.busy.has(workspaceId)) throw new TerminalBusyError(workspaceId);
+    this.busy.add(workspaceId);
     try {
-      await this.requireRunningPod(terminalId);
+      await this.requireRunningPod(workspaceId);
 
       const decoders = {
         out: new StringDecoder('utf8'),
@@ -295,7 +413,7 @@ export class TerminalSessionService {
       };
 
       const execution = await this.k8s.execInPod(
-        terminalPodNameForId(terminalId),
+        terminalPodNameForId(workspaceId),
         {
           container: TERMINAL_CONTAINER_NAME,
           command: [
@@ -340,18 +458,18 @@ export class TerminalSessionService {
         signal?.removeEventListener('abort', onAbort);
       }
     } finally {
-      this.busy.delete(terminalId);
+      this.busy.delete(workspaceId);
     }
   }
 
   // ── Archivos ───────────────────────────────────────────────────────────
 
   async exportFiles(
-    terminalId: string,
+    workspaceId: string,
     dir: string,
   ): Promise<TerminalExportResult> {
-    await this.requireRunningPod(terminalId);
-    const result = await this.collect(terminalPodNameForId(terminalId), [
+    await this.requireRunningPod(workspaceId);
+    const result = await this.collect(terminalPodNameForId(workspaceId), [
       'node',
       '-e',
       EXPORT_FILES_SCRIPT,
@@ -359,26 +477,26 @@ export class TerminalSessionService {
     ]);
     if (result.code !== 0) {
       throw new TerminalFileTransferError(
-        `No se pudieron leer los archivos de la sesión: ${result.stderr.slice(0, 300)}`,
+        `No se pudieron leer los archivos del proyecto: ${result.stderr.slice(0, 300)}`,
       );
     }
     try {
       return JSON.parse(result.stdout) as TerminalExportResult;
     } catch (cause) {
       throw new TerminalFileTransferError(
-        'La sesión devolvió una lista de archivos ilegible.',
+        'La terminal devolvió una lista de archivos ilegible.',
         cause,
       );
     }
   }
 
   async importFiles(
-    terminalId: string,
+    workspaceId: string,
     files: Readonly<Record<string, string>>,
   ): Promise<{ written: number }> {
-    await this.requireRunningPod(terminalId);
+    await this.requireRunningPod(workspaceId);
     await this.writeFiles(
-      terminalPodNameForId(terminalId),
+      terminalPodNameForId(workspaceId),
       '/workspace',
       files,
     );
@@ -388,17 +506,18 @@ export class TerminalSessionService {
   // ── Servidores en segundo plano y vista previa ─────────────────────────
 
   /**
-   * Lanza un servidor dentro de la sesión (`npm run dev -- --host 0.0.0.0`) que
-   * sobrevive al comando, y espera a que el puerto responda. Es código del owner
-   * corriendo en su sandbox, como cualquier comando: Jin_Core lo audita antes.
+   * Lanza un servidor dentro del workspace (`npm run dev -- --host 0.0.0.0`)
+   * que sobrevive al comando, y espera a que el puerto responda. Es código
+   * del owner corriendo en su sandbox, como cualquier comando: Jin_Core lo
+   * audita antes.
    */
   async startService(
-    terminalId: string,
+    workspaceId: string,
     request: StartServiceRequest,
   ): Promise<TerminalServiceStart> {
     this.rbacValidator.validate('runTerminalCommand');
-    await this.requireRunningPod(terminalId);
-    const result = await this.runServiceScript(terminalId, [
+    await this.requireRunningPod(workspaceId);
+    const result = await this.runServiceScript(workspaceId, [
       'start',
       String(request.port),
       request.command,
@@ -406,20 +525,20 @@ export class TerminalSessionService {
     return result as unknown as TerminalServiceStart;
   }
 
-  async stopService(terminalId: string, port: number): Promise<void> {
-    await this.requireRunningPod(terminalId);
-    await this.runServiceScript(terminalId, ['stop', String(port)]);
+  async stopService(workspaceId: string, port: number): Promise<void> {
+    await this.requireRunningPod(workspaceId);
+    await this.runServiceScript(workspaceId, ['stop', String(port)]);
   }
 
-  async listServices(terminalId: string): Promise<TerminalServiceInfo[]> {
-    await this.requireRunningPod(terminalId);
-    const result = await this.runServiceScript(terminalId, ['list', '0']);
+  async listServices(workspaceId: string): Promise<TerminalServiceInfo[]> {
+    await this.requireRunningPod(workspaceId);
+    const result = await this.runServiceScript(workspaceId, ['list', '0']);
     return (result.services ?? []) as TerminalServiceInfo[];
   }
 
-  async serviceLogs(terminalId: string, port: number): Promise<string> {
-    await this.requireRunningPod(terminalId);
-    const result = await this.runServiceScript(terminalId, [
+  async serviceLogs(workspaceId: string, port: number): Promise<string> {
+    await this.requireRunningPod(workspaceId);
+    const result = await this.runServiceScript(workspaceId, [
       'logs',
       String(port),
     ]);
@@ -427,10 +546,10 @@ export class TerminalSessionService {
   }
 
   private async runServiceScript(
-    terminalId: string,
+    workspaceId: string,
     args: readonly string[],
   ): Promise<Record<string, unknown> & { services?: unknown[] }> {
-    const result = await this.collect(terminalPodNameForId(terminalId), [
+    const result = await this.collect(terminalPodNameForId(workspaceId), [
       'node',
       '-e',
       SERVICE_SCRIPT,
@@ -438,7 +557,7 @@ export class TerminalSessionService {
     ]);
     if (result.code !== 0) {
       throw new TerminalServiceError(
-        `No se pudo manejar el servidor de la sesión: ${result.stderr.slice(0, 300)}`,
+        `No se pudo manejar el servidor del proyecto: ${result.stderr.slice(0, 300)}`,
         502,
       );
     }
@@ -446,18 +565,19 @@ export class TerminalSessionService {
       return JSON.parse(result.stdout) as Record<string, unknown>;
     } catch {
       throw new TerminalServiceError(
-        'La sesión devolvió una respuesta ilegible.',
+        'La terminal devolvió una respuesta ilegible.',
         502,
       );
     }
   }
 
   /**
-   * Reenvía una petición HTTP al puerto de un servidor de la sesión, a través
-   * del API server. Solo la sesión del propio owner y solo puertos de usuario.
+   * Reenvía una petición HTTP al puerto de un servidor del workspace, a
+   * través del API server. Solo el workspace del propio owner y solo
+   * puertos de usuario.
    */
   async proxy(
-    terminalId: string,
+    workspaceId: string,
     port: number,
     request: {
       method: string;
@@ -466,8 +586,8 @@ export class TerminalSessionService {
       body?: Buffer | undefined;
     },
   ): Promise<PodProxyResponse> {
-    await this.requireRunningPod(terminalId);
-    const podName = terminalPodNameForId(terminalId);
+    await this.requireRunningPod(workspaceId);
+    const podName = terminalPodNameForId(workspaceId);
     try {
       const response = await this.k8s.proxyToPod(podName, port, request);
       // El API server reescribe los enlaces del HTML: se deshace para que la
@@ -492,19 +612,19 @@ export class TerminalSessionService {
   // ── Publicar un build ──────────────────────────────────────────────────
 
   async expose(
-    terminalId: string,
+    workspaceId: string,
     request: ExposeTerminalRequest,
   ): Promise<TerminalExposure> {
     this.rbacValidator.validate('exposeTerminalSession');
-    await this.requireRunningPod(terminalId);
-    if ((await this.listExposures()).has(terminalId)) {
+    await this.requireRunningPod(workspaceId);
+    if ((await this.listExposures()).has(workspaceId)) {
       throw new TerminalExposeError(
-        'Esta sesión ya publicó un build. Cierra la sesión para publicar otro.',
+        'Este proyecto ya publicó un build. Detén la terminal para publicar otro.',
         409,
       );
     }
 
-    const podName = terminalPodNameForId(terminalId);
+    const podName = terminalPodNameForId(workspaceId);
     const hasIndex = await this.collect(podName, [
       'sh',
       '-c',
@@ -514,7 +634,7 @@ export class TerminalSessionService {
     ]);
     if (hasIndex.code !== 0) {
       throw new TerminalExposeError(
-        `No hay ${request.dir}/index.html en la sesión: corre el build primero (por ejemplo npm run build).`,
+        `No hay ${request.dir}/index.html en la terminal: corre el build primero (por ejemplo npm run build).`,
       );
     }
 
@@ -561,7 +681,7 @@ export class TerminalSessionService {
     const namespace = this.k8s.namespace;
     const slug = generateSlug(request.slugHint);
     const service = buildService({
-      serviceId: terminalId,
+      serviceId: workspaceId,
       namespace,
       port: request.port,
     });
@@ -575,14 +695,14 @@ export class TerminalSessionService {
       });
       await this.k8s.createNetworkPolicy(
         buildServiceIngressNetworkPolicy({
-          serviceId: terminalId,
+          serviceId: workspaceId,
           namespace,
           port: request.port,
         }),
       );
       await this.k8s.createIngressRoute(
         buildIngressRoute({
-          serviceId: terminalId,
+          serviceId: workspaceId,
           namespace,
           slug,
           port: request.port,
@@ -590,10 +710,10 @@ export class TerminalSessionService {
         }),
       );
     } catch (error) {
-      const serviceName = servicePodNameForId(terminalId);
+      const serviceName = servicePodNameForId(workspaceId);
       await this.k8s.deleteIngressRoute(serviceName);
       await this.k8s.deleteService(serviceName);
-      await this.k8s.deleteNetworkPolicy(`${terminalId}-ingress`);
+      await this.k8s.deleteNetworkPolicy(`${workspaceId}-ingress`);
       throw error;
     }
     return { slug, url: `https://${slug}.jinserver.com` };
@@ -604,11 +724,20 @@ export class TerminalSessionService {
   private async listPods(): Promise<V1Pod[]> {
     const pods = await this.k8s.listPodsByLabel(ACTIVE_TERMINAL_SELECTOR);
     // Un pod que se está borrando (`deletionTimestamp`) sigue "Running" unos
-    // segundos: no cuenta como sesión, ni para la lista ni para el límite.
+    // segundos: no cuenta como corriendo, ni para la lista ni para el límite.
     return pods.filter((pod) => !pod.metadata?.deletionTimestamp);
   }
 
-  /** id de sesión → link publicado, a partir de los Service que ya existen. */
+  private async listRunningPods(): Promise<V1Pod[]> {
+    const pods = await this.listPods();
+    const now = Date.now();
+    return pods.filter((pod) => {
+      const phase = statusOf(pod, now);
+      return phase === 'running' || phase === 'starting';
+    });
+  }
+
+  /** id de workspace → link publicado, a partir de los Service que ya existen. */
   private async listExposures(): Promise<Map<string, TerminalExposure>> {
     const services = await this.k8s.listServicesByLabel(SERVICE_ID_LABEL);
     const result = new Map<string, TerminalExposure>();
@@ -622,21 +751,96 @@ export class TerminalSessionService {
     return result;
   }
 
-  private async requireRunningPod(terminalId: string): Promise<V1Pod> {
-    let pod: V1Pod;
+  private infoFrom(
+    workspaceId: string,
+    pod: V1Pod | null,
+    pvc: V1PersistentVolumeClaim | null,
+    exposure: TerminalExposure | null,
+  ): TerminalWorkspaceInfo {
+    const createdAt = isoOf(
+      pvc?.metadata?.creationTimestamp ?? pod?.metadata?.creationTimestamp,
+    );
+    if (!pod) {
+      return {
+        id: workspaceId,
+        status: 'stopped',
+        createdAt,
+        expiresAt: null,
+        requestId: null,
+        exposure: null,
+        lastActivityAt: null,
+      };
+    }
+    return {
+      id: workspaceId,
+      status: statusOf(pod, Date.now()),
+      createdAt,
+      expiresAt:
+        pod.metadata?.annotations?.[SERVICE_EXPIRES_AT_ANNOTATION] ?? null,
+      requestId: pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION] ?? null,
+      exposure,
+      lastActivityAt:
+        pod.metadata?.annotations?.[LAST_ACTIVITY_ANNOTATION] ?? null,
+    };
+  }
+
+  private async readPodOrNull(podName: string): Promise<V1Pod | null> {
     try {
-      pod = await this.k8s.readPod(terminalPodNameForId(terminalId));
+      return await this.k8s.readPod(podName);
     } catch (error) {
-      if (isNotFound(error)) throw new TerminalNotFoundError(terminalId);
+      if (isNotFound(error)) return null;
       throw error;
     }
+  }
+
+  private async readPvcOrNull(
+    workspaceId: string,
+  ): Promise<V1PersistentVolumeClaim | null> {
+    try {
+      return await this.k8s.readPvc(terminalWorkspacePvcNameForId(workspaceId));
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Verifica que el workspace tenga un pod corriendo (y de paso anota
+   * actividad, con throttle): es el punto de entrada de exec/servicios/
+   * archivos/proxy/publicar, así que cubrirlo acá cubre todo lo demás.
+   */
+  private async requireRunningPod(workspaceId: string): Promise<V1Pod> {
+    const podName = terminalPodNameForId(workspaceId);
+    const pod = await this.readPodOrNull(podName);
+    if (!pod) {
+      const exists = (await this.readPvcOrNull(workspaceId)) !== null;
+      if (!exists) throw new TerminalWorkspaceNotFoundError(workspaceId);
+      throw new TerminalNotRunningError(workspaceId, 'stopped');
+    }
     if (pod.metadata?.labels?.[SERVICE_TYPE_LABEL] !== TERMINAL_TYPE_VALUE) {
-      throw new TerminalNotFoundError(terminalId);
+      throw new TerminalWorkspaceNotFoundError(workspaceId);
     }
     const status = statusOf(pod, Date.now());
-    if (status !== 'running')
-      throw new TerminalNotRunningError(terminalId, status);
+    if (status !== 'running') {
+      throw new TerminalNotRunningError(workspaceId, status);
+    }
+    await this.touchActivity(workspaceId, podName);
     return pod;
+  }
+
+  private async touchActivity(
+    workspaceId: string,
+    podName: string,
+  ): Promise<void> {
+    const now = Date.now();
+    const last = this.lastTouch.get(workspaceId) ?? 0;
+    if (now - last < TOUCH_THROTTLE_MS) return;
+    this.lastTouch.set(workspaceId, now);
+    await this.k8s.patchPodAnnotation(
+      podName,
+      LAST_ACTIVITY_ANNOTATION,
+      new Date(now).toISOString(),
+    );
   }
 
   /** Corre un comando corto y junta su salida (subir, exportar, arrancar el servidor). */
@@ -664,7 +868,7 @@ export class TerminalSessionService {
     );
     if (result.code !== 0) {
       throw new TerminalFileTransferError(
-        `No se pudieron copiar los archivos a la sesión: ${result.stderr.slice(0, 300)}`,
+        `No se pudieron copiar los archivos al proyecto: ${result.stderr.slice(0, 300)}`,
       );
     }
   }

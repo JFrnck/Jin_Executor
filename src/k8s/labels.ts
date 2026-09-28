@@ -30,9 +30,23 @@ export function servicePodNameForId(serviceId: string): string {
 export const TERMINAL_TYPE_VALUE = 'terminal';
 export const TERMINAL_CONTAINER_NAME = 'main';
 
-export function terminalPodNameForId(terminalId: string): string {
-  return `agent-terminal-${terminalId}`;
+export function terminalPodNameForId(workspaceId: string): string {
+  return `agent-terminal-${workspaceId}`;
 }
+
+// Disco persistente por proyecto (2026-09-28, ADR 0016 ampliada): el `id` es
+// ahora el id ESTABLE del proyecto (lo genera la app), no uno al azar por
+// sesión — así el disco sobrevive a que el pod se destruya y se vuelva a
+// crear. `WORKSPACE_TYPE_VALUE` distingue el PVC en las listas por label del
+// resto (pods de servicio/terminal usan SERVICE_TYPE_LABEL con otro valor).
+export const WORKSPACE_TYPE_VALUE = 'workspace';
+
+export function terminalWorkspacePvcNameForId(workspaceId: string): string {
+  return `terminal-ws-${workspaceId}`;
+}
+
+/** Última vez que el owner mandó un comando/servicio/petición: lo usa el reaper para liberar por inactividad. */
+export const LAST_ACTIVITY_ANNOTATION = 'jin.io/last-activity-at';
 
 /**
  * Annotation con el `requestId` de la aprobación (HITL) que originó el pod.

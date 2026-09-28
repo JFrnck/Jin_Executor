@@ -1,6 +1,22 @@
 import { z } from 'zod';
 import { isSafeRelativePath } from '../preview-service/tar-payload';
 
+/**
+ * Id de proyecto que manda la app (2026-09-28, ADR 0016 ampliada): nombra el
+ * pod Y el PVC en Kubernetes, así que se valida ESTRICTO antes de tocar
+ * cualquier nombre de recurso — sin esto, un id fuera de forma podría colar
+ * caracteres inválidos (o, con nombres compuestos, apuntar a un recurso que
+ * no le pertenece). Un UUID cualquiera (mayúsculas o minúsculas) alcanza; se
+ * normaliza a minúsculas, que es lo único que Kubernetes acepta en nombres.
+ */
+export const WorkspaceIdSchema = z
+  .string()
+  .regex(
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
+    'id de proyecto inválido',
+  )
+  .transform((id) => id.toLowerCase());
+
 /** Mismos topes que Publicar (ADR 0015): una app de pocos archivos, no un repo. */
 export const TERMINAL_MAX_FILES = 50;
 export const TERMINAL_MAX_TOTAL_BYTES = 256 * 1024;
@@ -30,13 +46,14 @@ const FilesSchema = z
   );
 
 export const StartTerminalRequestSchema = z.object({
+  /** Solo se escriben la primera vez que se crea el disco del proyecto (nunca sobre uno que ya existe). */
   files: FilesSchema.default({}),
   ttlSeconds: z
     .number()
     .int()
     .positive()
     .max(24 * 60 * 60),
-  /** Aprobación (HITL) que abrió la sesión; lo manda Jin_Core para enlazarla con el audit. */
+  /** Aprobación (HITL) que abrió el pod; lo manda Jin_Core para enlazarla con el audit. */
   requestId: z.string().uuid().optional(),
 });
 export type StartTerminalRequest = z.infer<typeof StartTerminalRequestSchema>;

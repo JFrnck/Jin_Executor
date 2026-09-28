@@ -76,6 +76,19 @@ export const EnvSchema = z.object({
     .default(4 * 60 * 60),
   // Una sola a la vez: la cuota de agents-sandbox y la CPU de la VM no dan más.
   TERMINAL_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
+  // Discos por proyecto (2026-09-28, ADR 0016 ampliada): cuántos proyectos
+  // pueden tener disco propio (corriendo o no) y cuánto pesa cada uno. El
+  // tope real de espacio también vive en la ResourceQuota de Jin_Infra
+  // (defensa en profundidad); esto es solo el límite que ve el owner.
+  TERMINAL_MAX_WORKSPACES: z.coerce.number().int().positive().default(10),
+  TERMINAL_WORKSPACE_STORAGE_GI: z.coerce.number().int().positive().default(3),
+  // Cuánto puede estar un pod sin recibir un comando/servicio/petición antes
+  // de que el reaper lo libere (el disco NO se toca, solo el pod).
+  TERMINAL_IDLE_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30 * 60),
   // src/config/secrets-loader.ts (Fase 8.1, BLUEPRINT §11): ver el
   // comentario equivalente en Jin_Core/src/config/env.schema.ts --
   // ninguna de estas 4 es un secreto, y las credenciales de la identidad

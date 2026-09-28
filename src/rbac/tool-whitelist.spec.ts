@@ -9,7 +9,7 @@ import {
 describe('tool-whitelist', () => {
   it('lista runCode con egressWhitelist vacío y maxTimeoutSeconds=300 (BLUEPRINT 4.4)', () => {
     const tools = listExecutorTools();
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     const runCode = tools.find((t) => t.name === 'runCode');
     expect(runCode?.egressWhitelist).toEqual([]);
     if (!runCode || !isRunToCompletionTool(runCode)) {
@@ -27,12 +27,13 @@ describe('tool-whitelist', () => {
     expect(runCode.remoteMemoryLimitMiB).toBe(4096);
   });
 
-  it('lista las 4 tools de terminal (ADR 0016) como tools de servicio, sin egreso por dominio', () => {
+  it('lista las 5 tools de terminal (ADR 0016) como tools de servicio, sin egreso por dominio', () => {
     for (const name of [
       'startTerminalSession',
       'runTerminalCommand',
       'exposeTerminalSession',
       'stopTerminalSession',
+      'deleteTerminalWorkspace',
     ]) {
       const tool = getExecutorToolDefinition(name);
       expect(tool?.isServiceTool).toBe(true);

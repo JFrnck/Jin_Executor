@@ -111,7 +111,15 @@ const EXECUTOR_TOOL_REGISTRY: readonly ExecutorToolDefinition[] = Object.freeze(
     }),
     Object.freeze({
       name: 'stopTerminalSession',
-      description: 'Cierra una sesión de terminal y destruye su pod.',
+      description:
+        'Detiene el pod de la terminal de un proyecto (el disco no se toca).',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
+    Object.freeze({
+      name: 'deleteTerminalWorkspace',
+      description:
+        'Elimina el disco de la terminal de un proyecto (irreversible).',
       egressWhitelist: Object.freeze([]),
       isServiceTool: true,
     }),
