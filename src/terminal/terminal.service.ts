@@ -462,6 +462,34 @@ export class TerminalWorkspaceService {
     }
   }
 
+  // ── Terminal interactiva (PTY) ─────────────────────────────────────────
+
+  /**
+   * Comprueba que el workspace tenga un pod corriendo y devuelve su nombre,
+   * para abrir una terminal interactiva (`TerminalPtyService`). Mismo permiso
+   * RBAC que un comando: la sesión es un canal dentro del pod ya aprobado.
+   */
+  async requirePodForPty(workspaceId: string): Promise<string> {
+    this.rbacValidator.validate('runTerminalCommand');
+    await this.requireRunningPod(workspaceId);
+    return terminalPodNameForId(workspaceId);
+  }
+
+  /**
+   * Marca actividad (con el throttle de siempre) para que el reaper no libere
+   * por inactividad un pod donde el owner está tecleando o esperando un install.
+   * Un fallo acá nunca debe cortar la sesión.
+   */
+  async notePtyActivity(workspaceId: string): Promise<void> {
+    try {
+      await this.touchActivity(workspaceId, terminalPodNameForId(workspaceId));
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo anotar actividad de la terminal ${workspaceId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   // ── Archivos ───────────────────────────────────────────────────────────
 
   async exportFiles(

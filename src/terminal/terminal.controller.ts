@@ -17,6 +17,10 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import {
+  OpenPtyRequestSchema,
+  PtyIdSchema,
+  PtyInputRequestSchema,
+  ResizePtyRequestSchema,
   ExecTerminalRequestSchema,
   ExportTerminalQuerySchema,
   ExposeTerminalRequestSchema,
@@ -25,6 +29,9 @@ import {
   StartTerminalRequestSchema,
   WorkspaceIdSchema,
   parsePort,
+  type OpenPtyRequest,
+  type PtyInputRequest,
+  type ResizePtyRequest,
   type ExecTerminalRequest,
   type ExportTerminalQuery,
   type ExposeTerminalRequest,
@@ -32,6 +39,10 @@ import {
   type StartServiceRequest,
   type StartTerminalRequest,
 } from './terminal-request.schema';
+import {
+  TerminalPtyService,
+  type PtyStreamEvent,
+} from './terminal-pty.service';
 import { TerminalWorkspaceService } from './terminal.service';
 import type {
   TerminalExportResult,
@@ -46,7 +57,10 @@ import type {
 @ApiTags('terminal')
 @Controller('terminal/workspaces')
 export class TerminalController {
-  constructor(private readonly terminal: TerminalWorkspaceService) {}
+  constructor(
+    private readonly terminal: TerminalWorkspaceService,
+    private readonly pty: TerminalPtyService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -141,6 +155,119 @@ export class TerminalController {
       emit({ t: 'error', message: 'El comando no produjo resultado.' });
     }
     res.end();
+  }
+
+  // ── Terminal interactiva (PTY) ────────────────────────────────────────
+  // Solo la usa Jin_Core; el Executor transporta bytes y no audita (Core sí).
+
+  @Post(':workspaceId/pty')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Abre una terminal interactiva (TTY) en el workspace',
+  })
+  async openPty(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Body(new ZodValidationPipe(OpenPtyRequestSchema)) body: OpenPtyRequest,
+  ): Promise<{ ptyId: string }> {
+    return this.pty.open(this.workspaceIdOrFail(rawWorkspaceId), body);
+  }
+
+  /**
+   * Salida de la terminal como NDJSON: `{t:'out', d:<base64>}` por chunk y una
+   * línea final (`exit` o `error`). Si el cliente se va, la sesión sigue viva y
+   * puede volver a pedir este stream.
+   */
+  @Get(':workspaceId/pty/:ptyId/output')
+  @ApiOperation({
+    summary: 'Salida en vivo de la terminal interactiva (NDJSON)',
+  })
+  async ptyOutput(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Param('ptyId') rawPtyId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const workspaceId = this.workspaceIdOrFail(rawWorkspaceId);
+    const ptyId = this.ptyIdOrFail(rawPtyId);
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+
+    let started = false;
+    const listener = (event: PtyStreamEvent): boolean => {
+      if (!started) {
+        started = true;
+        res.status(200);
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+      }
+      res.write(`${JSON.stringify(event)}\n`);
+      return res.writableLength < MAX_PTY_PENDING_OUTPUT_BYTES;
+    };
+
+    try {
+      await this.pty.subscribe(workspaceId, ptyId, listener, controller.signal);
+    } catch (error) {
+      if (started) {
+        listener({
+          t: 'error',
+          message:
+            error instanceof Error ? error.message : 'Falló la terminal.',
+        });
+      } else {
+        throw error;
+      }
+    }
+    if (!started) {
+      // Suscripción cortada por el cliente antes de que hubiera salida.
+      res.status(200);
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    }
+    res.end();
+  }
+
+  @Post(':workspaceId/pty/:ptyId/input')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Manda bytes del teclado a la terminal (base64)' })
+  ptyInput(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Param('ptyId') rawPtyId: string,
+    @Body(new ZodValidationPipe(PtyInputRequestSchema)) body: PtyInputRequest,
+  ): void {
+    this.pty.write(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      this.ptyIdOrFail(rawPtyId),
+      Buffer.from(body.data, 'base64'),
+    );
+  }
+
+  @Post(':workspaceId/pty/:ptyId/resize')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Cambia el tamaño de la terminal interactiva' })
+  ptyResize(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Param('ptyId') rawPtyId: string,
+    @Body(new ZodValidationPipe(ResizePtyRequestSchema))
+    body: ResizePtyRequest,
+  ): void {
+    this.pty.resize(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      this.ptyIdOrFail(rawPtyId),
+      body,
+    );
+  }
+
+  @Delete(':workspaceId/pty/:ptyId')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Cierra la terminal interactiva' })
+  ptyClose(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Param('ptyId') rawPtyId: string,
+  ): void {
+    this.pty.close(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      this.ptyIdOrFail(rawPtyId),
+    );
   }
 
   @Get(':workspaceId/files')
@@ -291,6 +418,13 @@ export class TerminalController {
   }
 
   /** Valida y normaliza el id de proyecto ANTES de que llegue a nombrar un recurso de Kubernetes. */
+  private ptyIdOrFail(raw: string): string {
+    const result = PtyIdSchema.safeParse(raw);
+    if (!result.success)
+      throw new BadRequestException('Id de terminal inválido.');
+    return result.data;
+  }
+
   private workspaceIdOrFail(raw: string): string {
     const result = WorkspaceIdSchema.safeParse(raw);
     if (!result.success)
@@ -298,6 +432,9 @@ export class TerminalController {
     return result.data;
   }
 }
+
+/** Salida sin consumir que se tolera hacia Core antes de cerrar la terminal (no se acumula memoria sin límite). */
+const MAX_PTY_PENDING_OUTPUT_BYTES = 1024 * 1024;
 
 /** Cabeceras que se reenvían al servidor: el resto (cookies, autorización, host) no. */
 const REQUEST_HEADERS = [
