@@ -501,4 +501,83 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
       await terminal.deleteWorkspace(id);
     }
   }, 180_000);
+
+  it('explorador de archivos del pod: escribir, leer, listar, conflicto, carpetas y borrar, por el canal real de exec', async () => {
+    const id = randomUUID();
+    await terminal.start(id, { files: {}, ttlSeconds: 3600 });
+    try {
+      // Crear (con carpetas) y leer de vuelta, con caracteres de varios bytes.
+      const content = 'export default "ñandú 🎉";\n';
+      const written = await terminal.fsWrite(id, {
+        path: 'src/App.jsx',
+        content,
+        force: false,
+      });
+      const read = await terminal.fsRead(id, 'src/App.jsx');
+      expect(read.content).toBe(content);
+      expect(read.sha256).toBe(written.sha256);
+
+      // Un archivo grande (400 KB): pasa por stdin y vuelve entero por stdout
+      // (el pipe cortaba en 64 KB cuando el script hacía process.exit).
+      const big = 'línea larga de prueba\n'.repeat(20_000).slice(0, 400 * 1024);
+      const bigWritten = await terminal.fsWrite(id, {
+        path: 'grande.txt',
+        content: big,
+        force: false,
+      });
+      const bigRead = await terminal.fsRead(id, 'grande.txt');
+      expect(bigRead.content).toBe(big);
+      expect(bigRead.sha256).toBe(bigWritten.sha256);
+
+      // Lo que cambia desde la terminal se detecta como conflicto al guardar.
+      await run(id, 'echo cambiado-desde-la-terminal > src/App.jsx');
+      await expect(
+        terminal.fsWrite(id, {
+          path: 'src/App.jsx',
+          content: 'mi edición',
+          expectedSha256: written.sha256,
+          force: false,
+        }),
+      ).rejects.toMatchObject({ fsCode: 'conflict', httpStatus: 409 });
+      expect((await terminal.fsRead(id, 'src/App.jsx')).content).toBe(
+        'cambiado-desde-la-terminal\n',
+      );
+
+      // ...y "sobrescribir" (force) lo pisa.
+      await terminal.fsWrite(id, {
+        path: 'src/App.jsx',
+        content: 'mi edición',
+        force: true,
+      });
+      expect((await terminal.fsRead(id, 'src/App.jsx')).content).toBe(
+        'mi edición',
+      );
+
+      // Listar: carpetas primero, node_modules aparece.
+      await terminal.fsMkdir(id, 'node_modules/paquete');
+      const listed = await terminal.fsList(id, '.');
+      expect(listed.entries.map((e) => `${e.type}:${e.name}`)).toEqual([
+        'dir:node_modules',
+        'dir:src',
+        'file:grande.txt',
+      ]);
+
+      // Rutas fuera del proyecto: rechazadas en el pod mismo.
+      await expect(terminal.fsRead(id, '../etc/passwd')).rejects.toMatchObject({
+        fsCode: 'outside',
+      });
+      await expect(terminal.fsRead(id, 'nada.txt')).rejects.toMatchObject({
+        fsCode: 'not_found',
+        httpStatus: 404,
+      });
+
+      // Borrar: un archivo sí, una carpeta con contenido no.
+      await terminal.fsDelete(id, 'grande.txt');
+      await expect(terminal.fsDelete(id, 'src')).rejects.toMatchObject({
+        fsCode: 'not_empty',
+      });
+    } finally {
+      await terminal.deleteWorkspace(id);
+    }
+  }, 180_000);
 });

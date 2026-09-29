@@ -1,8 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   symlinkSync,
@@ -13,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   EXPORT_FILES_SCRIPT,
+  FS_SCRIPT,
   RUN_SCRIPT,
   SERVICE_SCRIPT,
   WRITE_FILES_SCRIPT,
@@ -370,5 +375,424 @@ describe('SERVICE_SCRIPT (servidores en segundo plano)', () => {
   it('detener algo que no existe no falla', () => {
     const { env } = sandbox();
     expect(svc(['stop', '45678'], env).json.stopped).toBe(false);
+  });
+});
+
+// ── FS_SCRIPT: explorador de archivos del pod ────────────────────────────
+
+interface FsOk<T> {
+  ok: true;
+  data: T;
+}
+interface FsFail {
+  ok: false;
+  code: string;
+  message: string;
+  [extra: string]: unknown;
+}
+type FsResult<T = Record<string, unknown>> = FsOk<T> | FsFail;
+
+function runFs<T = Record<string, unknown>>(
+  workspace: string,
+  op: string,
+  target = '.',
+  input?: object,
+): FsResult<T> {
+  let stdin: Buffer | undefined;
+  if (input) {
+    const body = JSON.stringify(input);
+    stdin = Buffer.from(`${Buffer.byteLength(body)}\n${body}`);
+  }
+  const result = spawnSync('node', ['-e', FS_SCRIPT, op, target], {
+    env: { ...process.env, JIN_WORKSPACE: workspace },
+    ...(stdin ? { input: stdin } : {}),
+  });
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout.toString()) as FsResult<T>;
+}
+
+function sha(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+describe('FS_SCRIPT — list', () => {
+  it('lista carpetas primero, luego archivos por nombre, con tipo y tamaño; node_modules aparece', () => {
+    const root = tmp();
+    mkdirSync(join(root, 'src'));
+    mkdirSync(join(root, 'node_modules'));
+    writeFileSync(join(root, 'b.txt'), 'bb');
+    writeFileSync(join(root, 'a.txt'), 'a');
+
+    const result = runFs<{
+      entries: { name: string; type: string; size: number }[];
+      truncated: boolean;
+    }>(root, 'list');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.entries.map((e) => `${e.type}:${e.name}`)).toEqual([
+      'dir:node_modules',
+      'dir:src',
+      'file:a.txt',
+      'file:b.txt',
+    ]);
+    expect(result.data.entries.find((e) => e.name === 'b.txt')?.size).toBe(2);
+    expect(result.data.truncated).toBe(false);
+  });
+
+  it('un enlace simbólico se lista como link y no se sigue', () => {
+    const root = tmp();
+    const outside = tmp();
+    writeFileSync(join(outside, 'secreto.txt'), 'x');
+    symlinkSync(outside, join(root, 'salida'));
+
+    const listed = runFs<{ entries: { name: string; type: string }[] }>(
+      root,
+      'list',
+    );
+    expect(listed.ok && listed.data.entries).toEqual([
+      expect.objectContaining({ name: 'salida', type: 'link' }),
+    ]);
+
+    const inside = runFs(root, 'list', 'salida');
+    expect(inside).toMatchObject({ ok: false, code: 'outside' });
+  });
+
+  it('una subcarpeta y errores: no existe, y un archivo no es una carpeta', () => {
+    const root = tmp();
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src', 'main.js'), 'x');
+    writeFileSync(join(root, 'f.txt'), 'x');
+
+    const sub = runFs<{ entries: { name: string }[] }>(root, 'list', 'src');
+    expect(sub.ok && sub.data.entries.map((e) => e.name)).toEqual(['main.js']);
+    expect(runFs(root, 'list', 'nada')).toMatchObject({
+      ok: false,
+      code: 'not_found',
+    });
+    expect(runFs(root, 'list', 'f.txt')).toMatchObject({
+      ok: false,
+      code: 'not_file',
+    });
+  });
+});
+
+describe('FS_SCRIPT — read', () => {
+  it('devuelve el contenido UTF-8, el tamaño y el sha256 de los bytes', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'hola.txt'), 'Hola ñandú 🎉');
+
+    const result = runFs<{ content: string; size: number; sha256: string }>(
+      root,
+      'read',
+      'hola.txt',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.content).toBe('Hola ñandú 🎉');
+    expect(result.data.size).toBe(Buffer.byteLength('Hola ñandú 🎉'));
+    expect(result.data.sha256).toBe(sha('Hola ñandú 🎉'));
+  });
+
+  it('rechaza binarios, no-UTF-8, archivos grandes, carpetas y enlaces', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'bin.dat'), Buffer.from([0x89, 0x50, 0x00, 0x47]));
+    writeFileSync(join(root, 'latin1.txt'), Buffer.from([0xe9, 0xe9]));
+    writeFileSync(join(root, 'grande.txt'), 'x'.repeat(512 * 1024 + 1));
+    mkdirSync(join(root, 'carpeta'));
+    writeFileSync(join(root, 'real.txt'), 'x');
+    symlinkSync(join(root, 'real.txt'), join(root, 'enlace.txt'));
+
+    expect(runFs(root, 'read', 'bin.dat')).toMatchObject({
+      ok: false,
+      code: 'not_text',
+    });
+    expect(runFs(root, 'read', 'latin1.txt')).toMatchObject({
+      ok: false,
+      code: 'not_text',
+    });
+    expect(runFs(root, 'read', 'grande.txt')).toMatchObject({
+      ok: false,
+      code: 'too_large',
+      size: 512 * 1024 + 1,
+    });
+    expect(runFs(root, 'read', 'carpeta')).toMatchObject({
+      ok: false,
+      code: 'not_file',
+    });
+    expect(runFs(root, 'read', 'enlace.txt')).toMatchObject({
+      ok: false,
+      code: 'symlink',
+    });
+    expect(runFs(root, 'read', 'no-existe.txt')).toMatchObject({
+      ok: false,
+      code: 'not_found',
+    });
+  });
+
+  it('un archivo de exactamente 512 KB se lee', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'justo.txt'), 'x'.repeat(512 * 1024));
+    expect(runFs(root, 'read', 'justo.txt')).toMatchObject({ ok: true });
+  });
+});
+
+describe('FS_SCRIPT — no se sale del espacio de trabajo', () => {
+  it('rechaza .., rutas absolutas y caracteres raros en todas las operaciones', () => {
+    const root = tmp();
+    const parent = join(root, '..');
+    writeFileSync(join(parent, 'fuera-fs-test.txt'), 'secreto');
+
+    for (const target of [
+      '../fuera-fs-test.txt',
+      '/etc/passwd',
+      'a/../../fuera-fs-test.txt',
+      'a\\b',
+    ]) {
+      expect(runFs(root, 'read', target), `read ${target}`).toMatchObject({
+        ok: false,
+        code: 'outside',
+      });
+      expect(runFs(root, 'list', target), `list ${target}`).toMatchObject({
+        ok: false,
+        code: 'outside',
+      });
+      expect(
+        runFs(root, 'write', target, { content: 'x', force: true }),
+        `write ${target}`,
+      ).toMatchObject({ ok: false, code: 'outside' });
+      expect(runFs(root, 'mkdir', target), `mkdir ${target}`).toMatchObject({
+        ok: false,
+        code: 'outside',
+      });
+      expect(runFs(root, 'delete', target), `delete ${target}`).toMatchObject({
+        ok: false,
+        code: 'outside',
+      });
+    }
+    expect(readFileSync(join(parent, 'fuera-fs-test.txt'), 'utf8')).toBe(
+      'secreto',
+    );
+  });
+
+  it('una carpeta que es enlace hacia afuera no permite leer, escribir, crear ni borrar a través de ella', () => {
+    const root = tmp();
+    const outside = tmp();
+    writeFileSync(join(outside, 'secreto.txt'), 'secreto');
+    symlinkSync(outside, join(root, 'trampa'));
+
+    expect(runFs(root, 'read', 'trampa/secreto.txt')).toMatchObject({
+      ok: false,
+      code: 'outside',
+    });
+    expect(
+      runFs(root, 'write', 'trampa/nuevo.txt', { content: 'x', force: true }),
+    ).toMatchObject({ ok: false, code: 'outside' });
+    expect(
+      runFs(root, 'write', 'trampa/otra/nuevo.txt', {
+        content: 'x',
+        force: true,
+      }),
+    ).toMatchObject({ ok: false, code: 'outside' });
+    expect(runFs(root, 'mkdir', 'trampa/carpeta')).toMatchObject({
+      ok: false,
+      code: 'outside',
+    });
+    expect(runFs(root, 'delete', 'trampa/secreto.txt')).toMatchObject({
+      ok: false,
+      code: 'outside',
+    });
+
+    expect(existsSync(join(outside, 'nuevo.txt'))).toBe(false);
+    expect(existsSync(join(outside, 'otra'))).toBe(false);
+    expect(existsSync(join(outside, 'carpeta'))).toBe(false);
+    expect(readFileSync(join(outside, 'secreto.txt'), 'utf8')).toBe('secreto');
+  });
+
+  it('un archivo que es enlace hacia afuera no se lee ni se escribe', () => {
+    const root = tmp();
+    const outside = tmp();
+    writeFileSync(join(outside, 'secreto.txt'), 'secreto');
+    symlinkSync(join(outside, 'secreto.txt'), join(root, 'enlace.txt'));
+
+    expect(runFs(root, 'read', 'enlace.txt')).toMatchObject({
+      ok: false,
+      code: 'outside',
+    });
+    expect(
+      runFs(root, 'write', 'enlace.txt', { content: 'pisado', force: true }),
+    ).toMatchObject({ ok: false, code: 'outside' });
+    expect(readFileSync(join(outside, 'secreto.txt'), 'utf8')).toBe('secreto');
+  });
+
+  it('un operación desconocida se rechaza', () => {
+    expect(runFs(tmp(), 'chmod', 'x')).toMatchObject({ ok: false });
+  });
+});
+
+describe('FS_SCRIPT — write', () => {
+  it('crea un archivo nuevo (y sus carpetas) y devuelve el sha256', () => {
+    const root = tmp();
+    const result = runFs<{ sha256: string; size: number }>(
+      root,
+      'write',
+      'src/components/App.jsx',
+      {
+        content: 'export default 1;\n',
+        force: false,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.sha256).toBe(sha('export default 1;\n'));
+    expect(readFileSync(join(root, 'src/components/App.jsx'), 'utf8')).toBe(
+      'export default 1;\n',
+    );
+  });
+
+  it('el contenido con caracteres de varios bytes llega intacto (el largo va en bytes)', () => {
+    const root = tmp();
+    const content = 'ñandú 🎉 你好'.repeat(200);
+    runFs(root, 'write', 'utf8.txt', { content, force: false });
+    expect(readFileSync(join(root, 'utf8.txt'), 'utf8')).toBe(content);
+  });
+
+  it('un archivo existente sin expectedSha256 ni force no se pisa', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'a.txt'), 'original');
+    expect(
+      runFs(root, 'write', 'a.txt', { content: 'nuevo', force: false }),
+    ).toMatchObject({ ok: false, code: 'exists' });
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('original');
+  });
+
+  it('con expectedSha256 correcto guarda; con uno viejo da conflicto con el hash actual y no toca nada', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'a.txt'), 'v1');
+
+    const saved = runFs(root, 'write', 'a.txt', {
+      content: 'v2',
+      expectedSha256: sha('v1'),
+      force: false,
+    });
+    expect(saved).toMatchObject({ ok: true });
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('v2');
+
+    writeFileSync(join(root, 'a.txt'), 'v3-cambiado-en-el-pod');
+    const conflict = runFs(root, 'write', 'a.txt', {
+      content: 'v4',
+      expectedSha256: sha('v2'),
+      force: false,
+    });
+    expect(conflict).toMatchObject({
+      ok: false,
+      code: 'conflict',
+      currentSha256: sha('v3-cambiado-en-el-pod'),
+    });
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe(
+      'v3-cambiado-en-el-pod',
+    );
+  });
+
+  it('force sobrescribe (el "sobrescribir" de la alerta de conflicto)', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'a.txt'), 'original');
+    expect(
+      runFs(root, 'write', 'a.txt', { content: 'forzado', force: true }),
+    ).toMatchObject({ ok: true });
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('forzado');
+  });
+
+  it('es atómico: no deja archivos temporales y conserva el modo (ej. un script ejecutable)', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'run.sh'), '#!/bin/sh\n');
+    chmodSync(join(root, 'run.sh'), 0o755);
+
+    runFs(root, 'write', 'run.sh', {
+      content: '#!/bin/sh\necho hola\n',
+      force: true,
+    });
+
+    expect(readdirSync(root)).toEqual(['run.sh']);
+    expect(lstatSync(join(root, 'run.sh')).mode & 0o777).toBe(0o755);
+  });
+
+  it('rechaza más de 512 KB sin escribir, y acepta exactamente 512 KB', () => {
+    const root = tmp();
+    expect(
+      runFs(root, 'write', 'g.txt', {
+        content: 'x'.repeat(512 * 1024 + 1),
+        force: true,
+      }),
+    ).toMatchObject({ ok: false, code: 'too_large' });
+    expect(existsSync(join(root, 'g.txt'))).toBe(false);
+    expect(
+      runFs(root, 'write', 'j.txt', {
+        content: 'x'.repeat(512 * 1024),
+        force: true,
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('no escribe sobre una carpeta ni sobre la raíz', () => {
+    const root = tmp();
+    mkdirSync(join(root, 'carpeta'));
+    expect(
+      runFs(root, 'write', 'carpeta', { content: 'x', force: true }),
+    ).toMatchObject({ ok: false, code: 'not_file' });
+    expect(
+      runFs(root, 'write', '.', { content: 'x', force: true }),
+    ).toMatchObject({ ok: false, code: 'not_file' });
+  });
+});
+
+describe('FS_SCRIPT — mkdir y delete', () => {
+  it('mkdir crea carpetas anidadas y es idempotente; no pisa un archivo', () => {
+    const root = tmp();
+    expect(runFs(root, 'mkdir', 'a/b/c')).toMatchObject({ ok: true });
+    expect(lstatSync(join(root, 'a/b/c')).isDirectory()).toBe(true);
+    expect(runFs(root, 'mkdir', 'a/b/c')).toMatchObject({ ok: true });
+    writeFileSync(join(root, 'f'), 'x');
+    expect(runFs(root, 'mkdir', 'f')).toMatchObject({
+      ok: false,
+      code: 'exists',
+    });
+  });
+
+  it('delete borra un archivo y una carpeta vacía, no una con contenido, no la raíz, no lo que no existe', () => {
+    const root = tmp();
+    writeFileSync(join(root, 'a.txt'), 'x');
+    mkdirSync(join(root, 'vacia'));
+    mkdirSync(join(root, 'llena'));
+    writeFileSync(join(root, 'llena', 'x'), 'x');
+
+    expect(runFs(root, 'delete', 'a.txt')).toMatchObject({ ok: true });
+    expect(runFs(root, 'delete', 'vacia')).toMatchObject({ ok: true });
+    expect(runFs(root, 'delete', 'llena')).toMatchObject({
+      ok: false,
+      code: 'not_empty',
+    });
+    expect(runFs(root, 'delete', '.')).toMatchObject({
+      ok: false,
+      code: 'outside',
+    });
+    expect(runFs(root, 'delete', 'nada')).toMatchObject({
+      ok: false,
+      code: 'not_found',
+    });
+    expect(existsSync(join(root, 'a.txt'))).toBe(false);
+    expect(existsSync(join(root, 'llena', 'x'))).toBe(true);
+  });
+
+  it('borrar un enlace simbólico borra el enlace, no lo que apunta', () => {
+    const root = tmp();
+    const outside = tmp();
+    writeFileSync(join(outside, 'importante.txt'), 'x');
+    symlinkSync(join(outside, 'importante.txt'), join(root, 'enlace'));
+
+    expect(runFs(root, 'delete', 'enlace')).toMatchObject({ ok: true });
+    expect(existsSync(join(root, 'enlace'))).toBe(false);
+    expect(readFileSync(join(outside, 'importante.txt'), 'utf8')).toBe('x');
   });
 });

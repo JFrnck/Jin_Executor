@@ -67,3 +67,28 @@ export type TerminalServiceStart =
       readonly log: string;
     }
   | { readonly status: 'timeout'; readonly port: number; readonly log: string };
+
+export interface TerminalFsEntry {
+  readonly name: string;
+  readonly type: 'file' | 'dir' | 'link' | 'other';
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+export interface TerminalFsList {
+  readonly entries: readonly TerminalFsEntry[];
+  readonly truncated: boolean;
+}
+
+export interface TerminalFsFile {
+  readonly content: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly sha256: string;
+}
+
+export interface TerminalFsWritten {
+  readonly sha256: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}

@@ -132,3 +132,41 @@ export const PtyInputRequestSchema = z.object({
     .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'base64 inválido'),
 });
 export type PtyInputRequest = z.infer<typeof PtyInputRequestSchema>;
+
+/** Explorador de archivos del pod (2026-09-29): un archivo de texto a la vez. */
+export const FS_MAX_FILE_BYTES = 512 * 1024;
+
+const FsFilePath = z.string().min(1).max(400).refine(isSafeRelativePath, {
+  message:
+    'ruta insegura (absoluta o con ".."): escaparía del espacio de trabajo',
+});
+const FsDirPath = z.union([z.literal('.'), FsFilePath]);
+
+export const FsListQuerySchema = z.object({ path: FsDirPath.default('.') });
+export type FsListQuery = z.infer<typeof FsListQuerySchema>;
+
+export const FsReadQuerySchema = z.object({ path: FsFilePath });
+export type FsReadQuery = z.infer<typeof FsReadQuerySchema>;
+
+export const FsWriteBodySchema = z.object({
+  path: FsFilePath,
+  content: z
+    .string()
+    .refine((text) => Buffer.byteLength(text) <= FS_MAX_FILE_BYTES, {
+      message: `el archivo supera ${FS_MAX_FILE_BYTES / 1024} KB`,
+    }),
+  /** Hash del contenido que el owner leyó: si el archivo cambió desde entonces, se rechaza (409). */
+  expectedSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+  /** Sobrescribir un archivo existente sin comprobar el hash (el "sobrescribir" de la alerta de conflicto). */
+  force: z.boolean().default(false),
+});
+export type FsWriteBody = z.infer<typeof FsWriteBodySchema>;
+
+export const FsMkdirBodySchema = z.object({ path: FsFilePath });
+export type FsMkdirBody = z.infer<typeof FsMkdirBodySchema>;
+
+export const FsDeleteQuerySchema = z.object({ path: FsFilePath });
+export type FsDeleteQuery = z.infer<typeof FsDeleteQuerySchema>;
