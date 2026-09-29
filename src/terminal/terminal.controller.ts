@@ -17,6 +17,11 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import {
+  FsDeleteQuerySchema,
+  FsListQuerySchema,
+  FsMkdirBodySchema,
+  FsReadQuerySchema,
+  FsWriteBodySchema,
   OpenPtyRequestSchema,
   PtyIdSchema,
   PtyInputRequestSchema,
@@ -29,6 +34,11 @@ import {
   StartTerminalRequestSchema,
   WorkspaceIdSchema,
   parsePort,
+  type FsDeleteQuery,
+  type FsListQuery,
+  type FsMkdirBody,
+  type FsReadQuery,
+  type FsWriteBody,
   type OpenPtyRequest,
   type PtyInputRequest,
   type ResizePtyRequest,
@@ -46,6 +56,9 @@ import {
 import { TerminalWorkspaceService } from './terminal.service';
 import type {
   TerminalExportResult,
+  TerminalFsFile,
+  TerminalFsList,
+  TerminalFsWritten,
   TerminalExposure,
   TerminalServiceInfo,
   TerminalServiceStart,
@@ -267,6 +280,75 @@ export class TerminalController {
     this.pty.close(
       this.workspaceIdOrFail(rawWorkspaceId),
       this.ptyIdOrFail(rawPtyId),
+    );
+  }
+
+  // ── Explorador de archivos del pod ────────────────────────────────────
+
+  @Get(':workspaceId/fs/list')
+  @ApiOperation({ summary: 'Lista una carpeta del disco del proyecto' })
+  fsList(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Query(new ZodValidationPipe(FsListQuerySchema)) query: FsListQuery,
+  ): Promise<TerminalFsList> {
+    return this.terminal.fsList(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      query.path,
+    );
+  }
+
+  @Get(':workspaceId/fs/file')
+  @ApiOperation({
+    summary: 'Lee un archivo de texto (UTF-8, hasta 512 KB) con su sha256',
+  })
+  fsRead(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Query(new ZodValidationPipe(FsReadQuerySchema)) query: FsReadQuery,
+  ): Promise<TerminalFsFile> {
+    return this.terminal.fsRead(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      query.path,
+    );
+  }
+
+  @Put(':workspaceId/fs/file')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Crea o guarda un archivo de texto (atómico). Con expectedSha256, 409 si cambió en el pod',
+  })
+  fsWrite(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Body(new ZodValidationPipe(FsWriteBodySchema)) body: FsWriteBody,
+  ): Promise<TerminalFsWritten> {
+    return this.terminal.fsWrite(this.workspaceIdOrFail(rawWorkspaceId), body);
+  }
+
+  @Post(':workspaceId/fs/dir')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Crea una carpeta (y las que falten)' })
+  async fsMkdir(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Body(new ZodValidationPipe(FsMkdirBodySchema)) body: FsMkdirBody,
+  ): Promise<void> {
+    await this.terminal.fsMkdir(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      body.path,
+    );
+  }
+
+  @Delete(':workspaceId/fs/entry')
+  @HttpCode(204)
+  @ApiOperation({
+    summary: 'Borra un archivo o una carpeta vacía (no recursivo)',
+  })
+  async fsDelete(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Query(new ZodValidationPipe(FsDeleteQuerySchema)) query: FsDeleteQuery,
+  ): Promise<void> {
+    await this.terminal.fsDelete(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      query.path,
     );
   }
 

@@ -101,3 +101,34 @@ export class TerminalPtyNotFoundError extends JinError {
     void ptyId;
   }
 }
+
+const FS_STATUS: Readonly<Record<string, number>> = {
+  not_found: 404,
+  outside: 400,
+  symlink: 422,
+  not_file: 422,
+  not_text: 422,
+  too_large: 413,
+  conflict: 409,
+  exists: 409,
+  not_empty: 409,
+};
+
+/**
+ * Una operación del explorador de archivos del pod que no se pudo hacer por
+ * algo que el owner puede entender y corregir (no existe, cambió, es binario,
+ * pasa el tope). `fsCode` es el que devuelve `FS_SCRIPT`; la app lo usa para
+ * distinguir un conflicto de un error.
+ */
+export class TerminalFsError extends JinError {
+  constructor(
+    readonly fsCode: string,
+    message: string,
+    readonly extra: Readonly<Record<string, unknown>> = {},
+  ) {
+    super(message, {
+      code: `TERMINAL_FS_${fsCode.toUpperCase()}`,
+      httpStatus: FS_STATUS[fsCode] ?? 502,
+    });
+  }
+}

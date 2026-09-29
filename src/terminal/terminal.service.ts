@@ -40,6 +40,7 @@ import {
   TerminalBusyError,
   TerminalExposeError,
   TerminalFileTransferError,
+  TerminalFsError,
   TerminalLimitError,
   TerminalNotRunningError,
   TerminalWorkspaceLimitError,
@@ -48,12 +49,14 @@ import {
 import type {
   ExecTerminalRequest,
   ExposeTerminalRequest,
+  FsWriteBody,
   StartServiceRequest,
   StartTerminalRequest,
 } from './terminal-request.schema';
 import {
   CHECK_STATIC_SERVER,
   EXPORT_FILES_SCRIPT,
+  FS_SCRIPT,
   SERVICE_SCRIPT,
   RUN_SCRIPT,
   START_STATIC_SERVER,
@@ -64,6 +67,9 @@ import type {
   TerminalServiceStart,
   TerminalExportResult,
   TerminalExposure,
+  TerminalFsFile,
+  TerminalFsList,
+  TerminalFsWritten,
   TerminalStatus,
   TerminalStreamEvent,
   TerminalWorkspaceInfo,
@@ -531,6 +537,81 @@ export class TerminalWorkspaceService {
     return { written: Object.keys(files).length };
   }
 
+  // ── Explorador de archivos del pod (2026-09-29) ────────────────────────
+  // El disco real del proyecto, un archivo de texto a la vez. Toda la lógica de
+  // rutas y topes vive en `FS_SCRIPT` (dentro del pod); acá solo se llama y se
+  // traduce su respuesta. La auditoría de escribir/borrar es de Jin_Core.
+
+  fsList(workspaceId: string, path: string): Promise<TerminalFsList> {
+    return this.fs<TerminalFsList>(workspaceId, 'list', path);
+  }
+
+  fsRead(workspaceId: string, path: string): Promise<TerminalFsFile> {
+    return this.fs<TerminalFsFile>(workspaceId, 'read', path);
+  }
+
+  fsWrite(workspaceId: string, body: FsWriteBody): Promise<TerminalFsWritten> {
+    return this.fs<TerminalFsWritten>(workspaceId, 'write', body.path, {
+      content: body.content,
+      ...(body.expectedSha256 ? { expectedSha256: body.expectedSha256 } : {}),
+      force: body.force,
+    });
+  }
+
+  async fsMkdir(workspaceId: string, path: string): Promise<void> {
+    await this.fs<Record<string, never>>(workspaceId, 'mkdir', path);
+  }
+
+  async fsDelete(workspaceId: string, path: string): Promise<void> {
+    await this.fs<Record<string, never>>(workspaceId, 'delete', path);
+  }
+
+  private async fs<T>(
+    workspaceId: string,
+    op: 'list' | 'read' | 'write' | 'mkdir' | 'delete',
+    path: string,
+    input?: unknown,
+  ): Promise<T> {
+    this.rbacValidator.validate('runTerminalCommand');
+    await this.requireRunningPod(workspaceId);
+    let stdin: Buffer | undefined;
+    if (input !== undefined) {
+      const body = JSON.stringify(input);
+      stdin = Buffer.from(`${Buffer.byteLength(body)}\n${body}`);
+    }
+    const result = await this.collect(
+      terminalPodNameForId(workspaceId),
+      ['node', '-e', FS_SCRIPT, op, path],
+      stdin,
+      // Un archivo de 512 KB escapado en JSON puede pasar de los 2 MB por defecto.
+      { outputLimit: 4 * 1024 * 1024 },
+    );
+    let parsed: {
+      ok: boolean;
+      data?: T;
+      code?: string;
+      message?: string;
+      [extra: string]: unknown;
+    };
+    try {
+      parsed = JSON.parse(result.stdout) as typeof parsed;
+    } catch (cause) {
+      throw new TerminalFileTransferError(
+        `El pod devolvió una respuesta ilegible al ${op === 'read' ? 'leer' : 'operar sobre'} el archivo: ${result.stderr.slice(0, 200)}`,
+        cause,
+      );
+    }
+    if (!parsed.ok) {
+      const { ok: _ok, code, message, ...extra } = parsed;
+      throw new TerminalFsError(
+        code ?? 'failed',
+        message ?? 'No se pudo completar la operación.',
+        extra,
+      );
+    }
+    return parsed.data as T;
+  }
+
   // ── Servidores en segundo plano y vista previa ─────────────────────────
 
   /**
@@ -876,9 +957,11 @@ export class TerminalWorkspaceService {
     podName: string,
     command: readonly string[],
     stdin?: Buffer,
+    options: { readonly outputLimit?: number } = {},
   ): Promise<Collected> {
     return collectExec(this.k8s, podName, TERMINAL_CONTAINER_NAME, command, {
       ...(stdin ? { stdin } : {}),
+      ...(options.outputLimit ? { outputLimit: options.outputLimit } : {}),
     });
   }
 
