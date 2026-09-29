@@ -17,6 +17,9 @@ import { TerminalReaperService } from './terminal-reaper.service';
 import { TerminalWorkspaceService } from './terminal.service';
 import type { TerminalStreamEvent } from './terminal.types';
 
+// Armado en tiempo de ejecución: un literal con la forma de un token de Anthropic
+// lo marcan los escáneres de secretos aunque sea de mentira.
+const FAKE_TOKEN = ['sk', 'ant', 'oat01', 'token-de-prueba'].join('-');
 const NODE_IMAGE = 'docker.io/library/node:22-alpine';
 
 /** Igual que en el test de preview-service: el K3s de testcontainers no trae Traefik. */
@@ -580,4 +583,106 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
       await terminal.deleteWorkspace(id);
     }
   }, 180_000);
+
+  it('Claude Code (ADR 0017): el pod lleva el label y el entorno, HOME y npm global viven en el disco, y la terminal hereda el token guardado', async () => {
+    const id = randomUUID();
+    const info = await terminal.start(id, {
+      files: {},
+      ttlSeconds: 3600,
+      claudeCode: true,
+    });
+    const pty = new TerminalPtyService(
+      terminal,
+      k8s,
+      new ConfigService(baseConfigValues),
+    );
+    try {
+      expect(info.claudeCode).toBe(true);
+      const listed = (await terminal.list()).find((w) => w.id === id);
+      expect(listed?.claudeCode).toBe(true);
+
+      // El entorno del pod (lo que heredan los comandos y la terminal).
+      const env = await run(
+        id,
+        'echo "$HOME|$npm_config_prefix|$HTTPS_PROXY|$DISABLE_AUTOUPDATER"; ls -d /workspace/.home /workspace/.npm-global; command -v node',
+      );
+      expect(env.exit?.code).toBe(0);
+      expect(env.out).toContain(
+        '/workspace/.home|/workspace/.npm-global|http://claude-egress.claude-egress.svc.cluster.local:3128|1',
+      );
+      expect(env.out).toContain('/workspace/.home');
+      expect(env.out).toContain('/workspace/.npm-global');
+
+      // Sin el archivo del token, la terminal no exporta nada.
+      const opened = await pty.open(id, { cols: 100, rows: 30 });
+      let out = '';
+      const controller = new AbortController();
+      const done = pty.subscribe(
+        id,
+        opened.ptyId,
+        (event) => {
+          if (event.t === 'out')
+            out += Buffer.from(event.d, 'base64').toString();
+          return true;
+        },
+        controller.signal,
+      );
+      const type = (text: string): void =>
+        pty.write(id, opened.ptyId, Buffer.from(text));
+      const waitFor = async (needle: string): Promise<void> => {
+        const deadline = Date.now() + 30_000;
+        while (!out.includes(needle)) {
+          if (Date.now() > deadline)
+            throw new Error(`No apareció "${needle}". Salida:\n${out}`);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      };
+      type('echo "sin-token:[$CLAUDE_CODE_OAUTH_TOKEN]"\r');
+      await waitFor('sin-token:[]');
+      pty.close(id, opened.ptyId);
+      controller.abort();
+      await done;
+
+      // El owner guarda el token por el explorador de archivos (no por la terminal).
+      await terminal.fsWrite(id, {
+        path: '.home/.claude-token',
+        content: `${FAKE_TOKEN}\n`,
+        force: true,
+      });
+
+      // Una terminal NUEVA lo hereda, sin que nadie lo teclee.
+      out = '';
+      const again = await pty.open(id, { cols: 100, rows: 30 });
+      const controller2 = new AbortController();
+      const done2 = pty.subscribe(
+        id,
+        again.ptyId,
+        (event) => {
+          if (event.t === 'out')
+            out += Buffer.from(event.d, 'base64').toString();
+          return true;
+        },
+        controller2.signal,
+      );
+      pty.write(
+        id,
+        again.ptyId,
+        Buffer.from('echo "con-token:[$CLAUDE_CODE_OAUTH_TOKEN]"\r'),
+      );
+      await waitFor(`con-token:[${FAKE_TOKEN}]`);
+      pty.close(id, again.ptyId);
+      controller2.abort();
+      await done2;
+
+      // "Traer archivos al proyecto" no copia el token ni el npm global.
+      const exported = await terminal.exportFiles(id, '.');
+      expect(Object.keys(exported.files).join(',')).not.toContain(
+        '.claude-token',
+      );
+      expect(exported.skipped.map((s) => s.path)).toContain('.home/');
+    } finally {
+      pty.onModuleDestroy();
+      await terminal.deleteWorkspace(id);
+    }
+  }, 240_000);
 });

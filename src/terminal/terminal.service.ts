@@ -7,6 +7,8 @@ import { collectExec } from '../k8s/pod-exec';
 import { podProxyPrefix, undoApiServerRewrite } from '../k8s/pod-proxy';
 import type { PodProxyResponse } from '../k8s/k8s.service';
 import {
+  CLAUDE_LABEL,
+  CLAUDE_LABEL_VALUE,
   JINSERVER_TLS_SECRET_NAME,
   LAST_ACTIVITY_ANNOTATION,
   REQUEST_ID_ANNOTATION,
@@ -147,6 +149,9 @@ export class TerminalWorkspaceService {
   private readonly registryUrl: string;
   private readonly registryNamespace: string;
   private readonly registryPort: number;
+  private readonly claudeEgressUrl: string;
+  private readonly claudeEgressNamespace: string;
+  private readonly claudeEgressPort: number;
   private readonly defaultTtlSeconds: number;
   private readonly maxTtlSeconds: number;
   private readonly maxConcurrent: number;
@@ -175,6 +180,15 @@ export class TerminalWorkspaceService {
       'registry-proxy',
     );
     this.registryPort = Number(new URL(this.registryUrl).port) || 4873;
+    this.claudeEgressUrl = configService.get<string>(
+      'TERMINAL_CLAUDE_EGRESS_URL',
+      'http://claude-egress.claude-egress.svc.cluster.local:3128',
+    );
+    this.claudeEgressNamespace = configService.get<string>(
+      'TERMINAL_CLAUDE_EGRESS_NAMESPACE',
+      'claude-egress',
+    );
+    this.claudeEgressPort = Number(new URL(this.claudeEgressUrl).port) || 3128;
     this.defaultTtlSeconds = configService.get<number>(
       'TERMINAL_DEFAULT_TTL_SECONDS',
       60 * 60,
@@ -280,6 +294,20 @@ export class TerminalWorkspaceService {
           expiresAt,
           requestId: request.requestId,
           now,
+          ...(request.claudeCode
+            ? {
+                claudeCode: {
+                  proxyUrl: this.claudeEgressUrl,
+                  // El proxy de npm y el propio clúster no pasan por el proxy de Anthropic.
+                  noProxy: [
+                    new URL(this.registryUrl).hostname,
+                    '.svc.cluster.local',
+                    'localhost',
+                    '127.0.0.1',
+                  ],
+                },
+              }
+            : {}),
         }),
       );
       await this.k8s.createNetworkPolicy(
@@ -288,6 +316,14 @@ export class TerminalWorkspaceService {
           namespace,
           registryNamespace: this.registryNamespace,
           registryPort: this.registryPort,
+          ...(request.claudeCode
+            ? {
+                claudeEgress: {
+                  namespace: this.claudeEgressNamespace,
+                  port: this.claudeEgressPort,
+                },
+              }
+            : {}),
         }),
       );
       await this.k8s.waitForPodRunning(podName, START_TIMEOUT_MS);
@@ -313,6 +349,7 @@ export class TerminalWorkspaceService {
       requestId: request.requestId ?? null,
       exposure: null,
       lastActivityAt: now.toISOString(),
+      claudeCode: request.claudeCode === true,
     };
   }
 
@@ -878,6 +915,7 @@ export class TerminalWorkspaceService {
         requestId: null,
         exposure: null,
         lastActivityAt: null,
+        claudeCode: false,
       };
     }
     return {
@@ -890,6 +928,7 @@ export class TerminalWorkspaceService {
       exposure,
       lastActivityAt:
         pod.metadata?.annotations?.[LAST_ACTIVITY_ANNOTATION] ?? null,
+      claudeCode: pod.metadata?.labels?.[CLAUDE_LABEL] === CLAUDE_LABEL_VALUE,
     };
   }
 

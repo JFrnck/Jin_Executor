@@ -24,7 +24,9 @@ export type PtyListener = (event: PtyStreamEvent) => boolean;
 const PTY_COMMAND = [
   'sh',
   '-c',
-  'cd "${JIN_WORKSPACE:-/workspace}" && export TERM=xterm-256color && exec sh',
+  // El token de Claude Code (ADR 0017), si el owner lo guardó, se exporta acá:
+  // así lo hereda la terminal sin que nadie lo teclee (no pasaría por el audit).
+  'cd "${JIN_WORKSPACE:-/workspace}" && export TERM=xterm-256color && if [ -f "$HOME/.claude-token" ]; then CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude-token")"; export CLAUDE_CODE_OAUTH_TOKEN; fi; exec sh',
 ] as const;
 
 /** Salida que se guarda mientras nadie está suscrito (entre abrir y suscribirse, o en una reconexión). */

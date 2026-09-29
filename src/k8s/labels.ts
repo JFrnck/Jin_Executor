@@ -28,6 +28,14 @@ export function servicePodNameForId(serviceId: string): string {
 // que se crean si publica el build, pero su tipo es distinto: las listas de
 // previews (`jin.io/type=service`) no lo ven.
 export const TERMINAL_TYPE_VALUE = 'terminal';
+/**
+ * Pod de terminal abierto con "Habilitar Claude Code" (ADR 0017, 2026-09-29).
+ * Lo pone el Executor SOLO cuando el owner lo pidió y aprobó: la NetworkPolicy
+ * del proxy de salida a Anthropic (Jin_Infra, `claude-egress`) solo acepta
+ * pods que tengan este label.
+ */
+export const CLAUDE_LABEL = 'jin.io/claude';
+export const CLAUDE_LABEL_VALUE = 'enabled';
 export const TERMINAL_CONTAINER_NAME = 'main';
 
 export function terminalPodNameForId(workspaceId: string): string {

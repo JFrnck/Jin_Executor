@@ -55,6 +55,8 @@ export const StartTerminalRequestSchema = z.object({
     .max(24 * 60 * 60),
   /** Aprobación (HITL) que abrió el pod; lo manda Jin_Core para enlazarla con el audit. */
   requestId: z.string().uuid().optional(),
+  /** Claude Code dentro del pod (ADR 0017): abre la salida a Anthropic. Solo con la aprobación del owner. */
+  claudeCode: z.boolean().optional(),
 });
 export type StartTerminalRequest = z.infer<typeof StartTerminalRequestSchema>;
 

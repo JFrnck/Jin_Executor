@@ -120,7 +120,7 @@ const base = path.resolve(workspace, process.argv[1] || '.');
 const MAX_FILES = 50;
 const MAX_TOTAL = 256 * 1024;
 const MAX_FILE = 200 * 1024;
-const SKIP_DIRS = new Set(['node_modules', '.git', '.jin', '.npm', '.cache', '.vite', '.turbo']);
+const SKIP_DIRS = new Set(['node_modules', '.git', '.jin', '.npm', '.cache', '.vite', '.turbo', '.home', '.npm-global']);
 const rootExport = base === workspace;
 const files = {};
 const skipped = [];
