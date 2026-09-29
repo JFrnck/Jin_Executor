@@ -79,3 +79,25 @@ export class TerminalProxyError extends JinError {
     super(message, { code: 'TERMINAL_PROXY_FAILED', httpStatus, cause });
   }
 }
+
+/** Ya hay una terminal interactiva abierta en este proyecto (una por workspace). */
+export class TerminalPtyExistsError extends JinError {
+  constructor(workspaceId: string) {
+    super(
+      'Este proyecto ya tiene una terminal interactiva abierta: reconéctate a ella o ciérrala primero.',
+      { code: 'TERMINAL_PTY_EXISTS', httpStatus: 409 },
+    );
+    void workspaceId;
+  }
+}
+
+/** La terminal interactiva no existe (se cerró, venció o el Executor se reinició). */
+export class TerminalPtyNotFoundError extends JinError {
+  constructor(ptyId: string) {
+    super('No hay una terminal interactiva abierta con ese id.', {
+      code: 'TERMINAL_PTY_NOT_FOUND',
+      httpStatus: 404,
+    });
+    void ptyId;
+  }
+}

@@ -12,6 +12,7 @@ import {
 } from '../../test/support/k3s-testcontainer';
 import { K8sService } from '../k8s/k8s.service';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
+import { TerminalPtyService } from './terminal-pty.service';
 import { TerminalReaperService } from './terminal-reaper.service';
 import { TerminalWorkspaceService } from './terminal.service';
 import type { TerminalStreamEvent } from './terminal.types';
@@ -426,4 +427,78 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
       await terminal.deleteWorkspace(id);
     }
   }, 120_000);
+  it('terminal interactiva (PTY): TTY real, teclas en vivo, prompts, resize, Ctrl+C y cierre', async () => {
+    const id = randomUUID();
+    await terminal.start(id, { files: {}, ttlSeconds: 3600 });
+    const pty = new TerminalPtyService(
+      terminal,
+      k8s,
+      new ConfigService(baseConfigValues),
+    );
+    try {
+      const { ptyId } = await pty.open(id, { cols: 100, rows: 30 });
+      let out = '';
+      let last: { t: string; code?: number } | undefined;
+      const controller = new AbortController();
+      const done = pty.subscribe(
+        id,
+        ptyId,
+        (event) => {
+          if (event.t === 'out')
+            out += Buffer.from(event.d, 'base64').toString();
+          else last = event;
+          return true;
+        },
+        controller.signal,
+      );
+      const type = (text: string): void =>
+        pty.write(id, ptyId, Buffer.from(text));
+      const waitFor = async (needle: string): Promise<void> => {
+        const deadline = Date.now() + 30_000;
+        while (!out.includes(needle)) {
+          if (Date.now() > deadline)
+            throw new Error(`No apareció "${needle}". Salida:\n${out}`);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      };
+
+      // Un TTY de verdad, con el tamaño pedido.
+      type('test -t 0 && echo TTY_OK; stty size\r');
+      await waitFor('TTY_OK');
+      await waitFor('30 100');
+
+      // El resize llega al pod.
+      pty.resize(id, ptyId, { cols: 120, rows: 40 });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      type('stty size\r');
+      await waitFor('40 120');
+
+      // Un prompt que espera lo que se teclea (lo que no podía la terminal por comandos).
+      type('read -p "nombre: " N; echo hola-$N\r');
+      await waitFor('nombre: ');
+      type('Ana\r');
+      await waitFor('hola-Ana');
+
+      // Ctrl+C corta el comando en curso y el shell sigue vivo.
+      type('sleep 100\r');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      type('\x03');
+      type('echo despues\r');
+      await waitFor('despues');
+
+      // Arranca en el espacio de trabajo.
+      type('pwd\r');
+      await waitFor('/workspace');
+
+      type('exit\r');
+      await done;
+      expect(last).toEqual({ t: 'exit', code: 0 });
+      // La sesión terminada libera el workspace para abrir otra.
+      const again = await pty.open(id, { cols: 80, rows: 24 });
+      pty.close(id, again.ptyId);
+    } finally {
+      pty.onModuleDestroy();
+      await terminal.deleteWorkspace(id);
+    }
+  }, 180_000);
 });

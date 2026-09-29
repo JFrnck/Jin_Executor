@@ -103,3 +103,32 @@ export function parsePort(raw: string): number | null {
   const port = Number(raw);
   return port >= TERMINAL_MIN_PORT && port <= 65535 ? port : null;
 }
+
+/** Terminal interactiva (PTY, ADR 0016 ampliada): tamaño de la ventana y entrada del teclado. */
+export const PTY_MIN_COLS = 20;
+export const PTY_MAX_COLS = 300;
+export const PTY_MIN_ROWS = 5;
+export const PTY_MAX_ROWS = 100;
+/** Tope de bytes de UN mensaje de teclado (un pegado grande); la app parte lo que pase. */
+export const PTY_MAX_INPUT_BYTES = 64 * 1024;
+
+export const PtyIdSchema = z.string().uuid();
+
+export const OpenPtyRequestSchema = z.object({
+  cols: z.number().int().min(PTY_MIN_COLS).max(PTY_MAX_COLS),
+  rows: z.number().int().min(PTY_MIN_ROWS).max(PTY_MAX_ROWS),
+});
+export type OpenPtyRequest = z.infer<typeof OpenPtyRequestSchema>;
+
+export const ResizePtyRequestSchema = OpenPtyRequestSchema;
+export type ResizePtyRequest = OpenPtyRequest;
+
+/** Bytes del teclado en base64 (pueden no ser UTF-8 válido por sí solos: Ctrl+C, secuencias de flechas). */
+export const PtyInputRequestSchema = z.object({
+  data: z
+    .string()
+    .min(1)
+    .max(Math.ceil((PTY_MAX_INPUT_BYTES * 4) / 3) + 4)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'base64 inválido'),
+});
+export type PtyInputRequest = z.infer<typeof PtyInputRequestSchema>;

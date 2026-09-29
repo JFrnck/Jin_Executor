@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import http from 'node:http';
 import https from 'node:https';
-import { Readable, Writable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import {
   CoreV1Api,
   CustomObjectsApi,
@@ -70,6 +70,54 @@ interface ExecSocket {
   on(event: 'error', listener: (error: Error) => void): unknown;
   on(event: 'close', listener: () => void): unknown;
   close(): void;
+}
+
+export interface PodPtyOptions {
+  readonly container: string;
+  readonly command: readonly string[];
+  readonly cols: number;
+  readonly rows: number;
+  /** Bytes crudos de la terminal (con TTY, stderr viene mezclado en stdout). */
+  readonly onData: (chunk: Buffer) => void;
+}
+
+/** Sesión con TTY dentro de un pod (ADR 0016, terminal interactiva). */
+export interface PodPty {
+  /** Resuelve con el código de salida; rechaza si la conexión se cae antes. */
+  readonly exitCode: Promise<number>;
+  write(data: Buffer): void;
+  resize(cols: number, rows: number): void;
+  /** Cierra stdin y la conexión (el shell recibe EOF/SIGHUP al cerrarse el TTY). */
+  close(): void;
+}
+
+/**
+ * Stdout con las propiedades que el cliente de Kubernetes reconoce como
+ * "redimensionable" (`rows`, `columns` y un evento `resize`): con eso reenvía
+ * solo el tamaño al canal de resize del `exec`.
+ */
+class PtyOutput extends Writable {
+  columns: number;
+  rows: number;
+
+  constructor(
+    cols: number,
+    rows: number,
+    private readonly onData: (chunk: Buffer) => void,
+  ) {
+    super();
+    this.columns = cols;
+    this.rows = rows;
+  }
+
+  override _write(
+    chunk: Buffer,
+    _encoding: BufferEncoding,
+    done: (error?: Error | null) => void,
+  ): void {
+    this.onData(chunk);
+    done();
+  }
 }
 
 export interface PodExecution {
@@ -277,6 +325,65 @@ export class K8sService {
       exitCode,
       abort: () => {
         try {
+          socket.close();
+        } catch {
+          // ya estaba cerrado
+        }
+      },
+    };
+  }
+
+  /**
+   * Abre una sesión con TTY dentro de un pod que ya corre (`pods/exec` con
+   * `tty=true`, ADR 0016 ampliada: terminal interactiva). A diferencia de
+   * `execInPod`, stdin queda abierto hasta `close()` y el tamaño se puede
+   * cambiar en vivo. Sin stderr: con TTY Kubernetes lo mezcla en stdout, y
+   * pedirlo aparte hace fallar el `exec`.
+   */
+  async openPty(name: string, options: PodPtyOptions): Promise<PodPty> {
+    const stdout = new PtyOutput(options.cols, options.rows, options.onData);
+    const stdin = new PassThrough();
+
+    let settle: {
+      resolve: (code: number) => void;
+      reject: (error: Error) => void;
+    };
+    const exitCode = new Promise<number>((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    exitCode.catch(() => undefined);
+
+    const socket = (await new Exec(this.kubeConfig).exec(
+      this.namespace,
+      name,
+      options.container,
+      [...options.command],
+      stdout,
+      null,
+      stdin,
+      true,
+      (status) => settle.resolve(exitCodeFromStatus(status)),
+    )) as unknown as ExecSocket;
+    socket.on('error', (error: Error) => settle.reject(error));
+    socket.on('close', () =>
+      settle.reject(
+        new Error('La conexión con el pod se cerró antes de terminar.'),
+      ),
+    );
+
+    return {
+      exitCode,
+      write: (data) => {
+        stdin.write(data);
+      },
+      resize: (cols, rows) => {
+        stdout.columns = cols;
+        stdout.rows = rows;
+        stdout.emit('resize');
+      },
+      close: () => {
+        try {
+          stdin.end();
           socket.close();
         } catch {
           // ya estaba cerrado
