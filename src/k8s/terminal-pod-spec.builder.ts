@@ -137,7 +137,20 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
             { name: 'npm_config_registry', value: input.npmRegistryUrl },
             // corepack (pnpm/yarn) también sale por el proxy, no a npmjs.org.
             { name: 'COREPACK_NPM_REGISTRY', value: input.npmRegistryUrl },
-            { name: 'npm_config_cache', value: '/tmp/.npm' },
+            // En el DISCO del proyecto, no en /tmp: /tmp es un emptyDir de 512 Mi y
+            // un `npm install` de Vite lo llenaba, con lo que el kubelet
+            // EXPULSABA el pod ("EmptyDir volume tmp exceeds the limit", visto en
+            // producción 2026-09-29). Además la caché sobrevive a que el pod se
+            // destruya y los reinstalls salen más rápido. `.cache` ya no se
+            // exporta al editor (terminal-scripts.ts, SKIP_DIRS).
+            {
+              name: 'npm_config_cache',
+              value: `${TERMINAL_WORKSPACE_PATH}/.cache/npm`,
+            },
+            {
+              name: 'XDG_CACHE_HOME',
+              value: `${TERMINAL_WORKSPACE_PATH}/.cache`,
+            },
             // Sin llamadas extra: el proxy no las necesita y solo agregan ruido.
             { name: 'npm_config_audit', value: 'false' },
             { name: 'npm_config_fund', value: 'false' },
