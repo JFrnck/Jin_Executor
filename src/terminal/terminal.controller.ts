@@ -22,68 +22,90 @@ import {
   ExposeTerminalRequestSchema,
   ImportTerminalRequestSchema,
   StartServiceRequestSchema,
-  parsePort,
-  type StartServiceRequest,
   StartTerminalRequestSchema,
+  WorkspaceIdSchema,
+  parsePort,
   type ExecTerminalRequest,
   type ExportTerminalQuery,
   type ExposeTerminalRequest,
   type ImportTerminalRequest,
+  type StartServiceRequest,
   type StartTerminalRequest,
 } from './terminal-request.schema';
-import { TerminalSessionService } from './terminal.service';
+import { TerminalWorkspaceService } from './terminal.service';
 import type {
-  TerminalServiceInfo,
-  TerminalServiceStart,
   TerminalExportResult,
   TerminalExposure,
-  TerminalSessionInfo,
+  TerminalServiceInfo,
+  TerminalServiceStart,
   TerminalStreamEvent,
+  TerminalWorkspaceInfo,
 } from './terminal.types';
 
-/** ADR 0016. Solo lo llama Jin_Core (`allow-from-jin`): nunca el modelo ni el owner directo. */
+/** ADR 0016 ampliada. Solo lo llama Jin_Core (`allow-from-jin`): nunca el modelo ni el owner directo. */
 @ApiTags('terminal')
-@Controller('terminal/sessions')
+@Controller('terminal/workspaces')
 export class TerminalController {
-  constructor(private readonly terminal: TerminalSessionService) {}
-
-  @Post()
-  @HttpCode(200)
-  @ApiOperation({ summary: 'Abre una sesión de terminal aislada (ADR 0016)' })
-  async start(
-    @Body(new ZodValidationPipe(StartTerminalRequestSchema))
-    body: StartTerminalRequest,
-  ): Promise<TerminalSessionInfo> {
-    return this.terminal.start(body);
-  }
+  constructor(private readonly terminal: TerminalWorkspaceService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Sesiones de terminal activas' })
-  async list(): Promise<TerminalSessionInfo[]> {
+  @ApiOperation({
+    summary:
+      'Todos los workspaces (proyectos con disco propio), corriendo o no',
+  })
+  async list(): Promise<TerminalWorkspaceInfo[]> {
     return this.terminal.list();
   }
 
-  @Delete(':id')
+  @Post(':workspaceId/start')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Inicia (o reanuda) el pod del workspace de un proyecto (ADR 0016 ampliada)',
+  })
+  async start(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Body(new ZodValidationPipe(StartTerminalRequestSchema))
+    body: StartTerminalRequest,
+  ): Promise<TerminalWorkspaceInfo> {
+    return this.terminal.start(this.workspaceIdOrFail(rawWorkspaceId), body);
+  }
+
+  @Delete(':workspaceId/pod')
   @HttpCode(204)
-  @ApiOperation({ summary: 'Cierra una sesión y destruye su pod' })
-  async stop(@Param('id') id: string): Promise<void> {
-    await this.terminal.stop(id);
+  @ApiOperation({
+    summary: 'Detiene el pod del workspace (el disco no se toca)',
+  })
+  async stopPod(@Param('workspaceId') rawWorkspaceId: string): Promise<void> {
+    await this.terminal.stopPod(this.workspaceIdOrFail(rawWorkspaceId));
+  }
+
+  @Delete(':workspaceId')
+  @HttpCode(204)
+  @ApiOperation({
+    summary: 'Elimina el disco del workspace (irreversible)',
+  })
+  async deleteWorkspace(
+    @Param('workspaceId') rawWorkspaceId: string,
+  ): Promise<void> {
+    await this.terminal.deleteWorkspace(this.workspaceIdOrFail(rawWorkspaceId));
   }
 
   /**
    * Corre un comando y devuelve la salida como NDJSON (`application/x-ndjson`):
    * una línea JSON por evento (`out`, `err`) y una final (`exit` o `error`).
    */
-  @Post(':id/exec')
+  @Post(':workspaceId/exec')
   @ApiOperation({
-    summary: 'Ejecuta un comando en la sesión (salida en streaming NDJSON)',
+    summary: 'Ejecuta un comando en el workspace (salida en streaming NDJSON)',
   })
   async exec(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Body(new ZodValidationPipe(ExecTerminalRequestSchema))
     body: ExecTerminalRequest,
     @Res() res: Response,
   ): Promise<void> {
+    const workspaceId = this.workspaceIdOrFail(rawWorkspaceId);
     const controller = new AbortController();
     res.on('close', () => controller.abort());
 
@@ -104,7 +126,7 @@ export class TerminalController {
     // normal por el filtro global; la excepción se relanza mientras no haya
     // empezado el stream.
     try {
-      await this.terminal.exec(id, body, emit, controller.signal);
+      await this.terminal.exec(workspaceId, body, emit, controller.signal);
     } catch (error) {
       if (started) {
         emit({
@@ -121,96 +143,113 @@ export class TerminalController {
     res.end();
   }
 
-  @Get(':id/files')
+  @Get(':workspaceId/files')
   @ApiOperation({
-    summary:
-      'Archivos de texto del espacio de trabajo (para traerlos al editor)',
+    summary: 'Archivos de texto del workspace (para traerlos al editor)',
   })
   async exportFiles(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Query(new ZodValidationPipe(ExportTerminalQuerySchema))
     query: ExportTerminalQuery,
   ): Promise<TerminalExportResult> {
-    return this.terminal.exportFiles(id, query.dir);
+    return this.terminal.exportFiles(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      query.dir,
+    );
   }
 
-  @Put(':id/files')
-  @ApiOperation({ summary: 'Copia archivos del editor al espacio de trabajo' })
+  @Put(':workspaceId/files')
+  @ApiOperation({ summary: 'Copia archivos del editor al workspace' })
   async importFiles(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Body(new ZodValidationPipe(ImportTerminalRequestSchema))
     body: ImportTerminalRequest,
   ): Promise<{ written: number }> {
-    return this.terminal.importFiles(id, body.files);
+    return this.terminal.importFiles(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      body.files,
+    );
   }
 
   // ── Servidores en segundo plano y vista previa ───────────────────────
 
-  @Post(':id/services')
+  @Post(':workspaceId/services')
   @HttpCode(200)
   @ApiOperation({
     summary:
-      'Lanza un servidor en segundo plano dentro de la sesión y espera a que el puerto responda',
+      'Lanza un servidor en segundo plano dentro del workspace y espera a que el puerto responda',
   })
   async startService(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Body(new ZodValidationPipe(StartServiceRequestSchema))
     body: StartServiceRequest,
   ): Promise<TerminalServiceStart> {
-    return this.terminal.startService(id, body);
+    return this.terminal.startService(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      body,
+    );
   }
 
-  @Get(':id/services')
-  @ApiOperation({ summary: 'Servidores en segundo plano de la sesión' })
-  async listServices(@Param('id') id: string): Promise<TerminalServiceInfo[]> {
-    return this.terminal.listServices(id);
+  @Get(':workspaceId/services')
+  @ApiOperation({ summary: 'Servidores en segundo plano del workspace' })
+  async listServices(
+    @Param('workspaceId') rawWorkspaceId: string,
+  ): Promise<TerminalServiceInfo[]> {
+    return this.terminal.listServices(this.workspaceIdOrFail(rawWorkspaceId));
   }
 
-  @Delete(':id/services/:port')
+  @Delete(':workspaceId/services/:port')
   @HttpCode(204)
   @ApiOperation({
     summary: 'Detiene un servidor en segundo plano (mata su grupo de procesos)',
   })
   async stopService(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Param('port') rawPort: string,
   ): Promise<void> {
-    await this.terminal.stopService(id, this.portOrFail(rawPort));
+    await this.terminal.stopService(
+      this.workspaceIdOrFail(rawWorkspaceId),
+      this.portOrFail(rawPort),
+    );
   }
 
-  @Get(':id/services/:port/logs')
+  @Get(':workspaceId/services/:port/logs')
   @ApiOperation({ summary: 'Últimas líneas de la salida de un servidor' })
   async serviceLogs(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Param('port') rawPort: string,
   ): Promise<{ log: string }> {
     return {
-      log: await this.terminal.serviceLogs(id, this.portOrFail(rawPort)),
+      log: await this.terminal.serviceLogs(
+        this.workspaceIdOrFail(rawWorkspaceId),
+        this.portOrFail(rawPort),
+      ),
     };
   }
 
   /**
-   * Reenvía la petición al puerto de un servidor de la sesión (vista previa en
-   * vivo). Solo lo llama Jin_Core, con el JWT del owner ya verificado.
+   * Reenvía la petición al puerto de un servidor del workspace (vista previa
+   * en vivo). Solo lo llama Jin_Core, con el JWT del owner ya verificado.
    */
-  @All([':id/proxy/:port', ':id/proxy/:port/*rest'])
+  @All([':workspaceId/proxy/:port', ':workspaceId/proxy/:port/*rest'])
   @ApiOperation({
-    summary: 'Proxy HTTP a un puerto de un servidor de la sesión',
+    summary: 'Proxy HTTP a un puerto de un servidor del workspace',
   })
   async proxy(
-    @Param('id') id: string,
+    @Param('workspaceId') rawWorkspaceId: string,
     @Param('port') rawPort: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const workspaceId = this.workspaceIdOrFail(rawWorkspaceId);
     const port = this.portOrFail(rawPort);
-    const prefix = `/terminal/sessions/${encodeURIComponent(id)}/proxy/${rawPort}`;
+    const prefix = `/terminal/workspaces/${encodeURIComponent(rawWorkspaceId)}/proxy/${rawPort}`;
     const rest = req.originalUrl.startsWith(prefix)
       ? req.originalUrl.slice(prefix.length)
       : '';
     const path = rest === '' || rest.startsWith('?') ? `/${rest}` : rest;
 
-    const upstream = await this.terminal.proxy(id, port, {
+    const upstream = await this.terminal.proxy(workspaceId, port, {
       method: req.method,
       path,
       headers: forwardedRequestHeaders(req, port),
@@ -218,7 +257,7 @@ export class TerminalController {
     });
 
     res.status(upstream.status);
-    // Marca lo que viene del servidor del owner: un 404 de su app no es un 404 de la sesión.
+    // Marca lo que viene del servidor del owner: un 404 de su app no es un 404 del proxy.
     res.setHeader('x-jin-proxied', '1');
     for (const [name, value] of Object.entries(upstream.headers)) {
       if (value !== undefined && RESPONSE_HEADERS.has(name.toLowerCase())) {
@@ -230,6 +269,20 @@ export class TerminalController {
     upstream.body.pipe(res);
   }
 
+  @Post(':workspaceId/expose')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Publica un directorio del workspace bajo https://<slug>.jinserver.com',
+  })
+  async expose(
+    @Param('workspaceId') rawWorkspaceId: string,
+    @Body(new ZodValidationPipe(ExposeTerminalRequestSchema))
+    body: ExposeTerminalRequest,
+  ): Promise<TerminalExposure> {
+    return this.terminal.expose(this.workspaceIdOrFail(rawWorkspaceId), body);
+  }
+
   private portOrFail(raw: string): number {
     const port = parsePort(raw);
     if (port === null)
@@ -237,18 +290,12 @@ export class TerminalController {
     return port;
   }
 
-  @Post(':id/expose')
-  @HttpCode(200)
-  @ApiOperation({
-    summary:
-      'Publica un directorio de la sesión bajo https://<slug>.jinserver.com',
-  })
-  async expose(
-    @Param('id') id: string,
-    @Body(new ZodValidationPipe(ExposeTerminalRequestSchema))
-    body: ExposeTerminalRequest,
-  ): Promise<TerminalExposure> {
-    return this.terminal.expose(id, body);
+  /** Valida y normaliza el id de proyecto ANTES de que llegue a nombrar un recurso de Kubernetes. */
+  private workspaceIdOrFail(raw: string): string {
+    const result = WorkspaceIdSchema.safeParse(raw);
+    if (!result.success)
+      throw new BadRequestException('Id de proyecto inválido.');
+    return result.data;
   }
 }
 

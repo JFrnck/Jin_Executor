@@ -1,40 +1,54 @@
 import { JinError } from '../common/errors/jin-error';
 
-/** ADR 0016: tope de sesiones de terminal simultáneas alcanzado. */
+/** ADR 0016 ampliada: tope de pods de terminal corriendo A LA VEZ. */
 export class TerminalLimitError extends JinError {
   constructor(limit: number) {
     super(
-      `Ya hay ${limit} sesión(es) de terminal activas (límite configurado): cierra una antes de abrir otra.`,
+      `Ya hay ${limit} terminal(es) corriendo (límite configurado): detén una antes de abrir otra.`,
       { code: 'TERMINAL_LIMIT_REACHED', httpStatus: 429 },
     );
   }
 }
 
-export class TerminalNotFoundError extends JinError {
-  constructor(terminalId: string) {
-    super(`No existe la sesión de terminal ${terminalId} (¿venció su TTL?).`, {
-      code: 'TERMINAL_NOT_FOUND',
+/** Tope de proyectos con disco propio (workspaces), corriendo o no. */
+export class TerminalWorkspaceLimitError extends JinError {
+  constructor(limit: number) {
+    super(
+      `Ya hay ${limit} proyectos con disco propio (límite configurado): elimina uno antes de crear otro.`,
+      { code: 'TERMINAL_WORKSPACE_LIMIT_REACHED', httpStatus: 429 },
+    );
+  }
+}
+
+/** No existe el disco de este proyecto (nunca se creó, o se eliminó). */
+export class TerminalWorkspaceNotFoundError extends JinError {
+  constructor(workspaceId: string) {
+    super(`No hay una terminal para el proyecto ${workspaceId}.`, {
+      code: 'TERMINAL_WORKSPACE_NOT_FOUND',
       httpStatus: 404,
     });
   }
 }
 
+/** El disco existe pero no hay pod corriendo: hace falta iniciarlo. */
 export class TerminalNotRunningError extends JinError {
-  constructor(terminalId: string, phase: string) {
+  constructor(workspaceId: string, phase: string) {
     super(
-      `La sesión de terminal ${terminalId} no está corriendo (${phase}). Abre una nueva.`,
+      `La terminal de este proyecto no está corriendo (${phase}). Inícala primero.`,
       { code: 'TERMINAL_NOT_RUNNING', httpStatus: 409 },
     );
+    void workspaceId;
   }
 }
 
-/** Un comando a la vez por sesión: la salida de dos mezclada no se puede leer. */
+/** Un comando a la vez por proyecto: la salida de dos mezclada no se puede leer. */
 export class TerminalBusyError extends JinError {
-  constructor(terminalId: string) {
+  constructor(workspaceId: string) {
     super(
-      `La sesión ${terminalId} ya está ejecutando un comando: espera a que termine.`,
+      `Esta terminal ya está ejecutando un comando: espera a que termine.`,
       { code: 'TERMINAL_BUSY', httpStatus: 409 },
     );
+    void workspaceId;
   }
 }
 

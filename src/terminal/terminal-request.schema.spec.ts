@@ -5,9 +5,34 @@ import {
   ExposeTerminalRequestSchema,
   ImportTerminalRequestSchema,
   StartServiceRequestSchema,
+  WorkspaceIdSchema,
   parsePort,
   StartTerminalRequestSchema,
 } from './terminal-request.schema';
+
+describe('WorkspaceIdSchema', () => {
+  it('acepta un UUID en cualquier capitalización y lo normaliza a minúsculas (Kubernetes no acepta mayúsculas en nombres)', () => {
+    expect(
+      WorkspaceIdSchema.parse('E621E1F8-C36C-495A-93FC-0C247A3E6E5F'),
+    ).toBe('e621e1f8-c36c-495a-93fc-0c247a3e6e5f');
+    expect(
+      WorkspaceIdSchema.parse('e621e1f8-c36c-495a-93fc-0c247a3e6e5f'),
+    ).toBe('e621e1f8-c36c-495a-93fc-0c247a3e6e5f');
+  });
+
+  it('rechaza cualquier cosa que no sea un UUID: sin esto un id inventado terminaría nombrando un recurso de Kubernetes', () => {
+    for (const bad of [
+      'abc',
+      '',
+      '../etc',
+      'e621e1f8-c36c-495a-93fc-0c247a3e6e5f; rm -rf /',
+      '11111111-1111-4111-8111-11111111111', // un dígito de menos
+      'e621e1f8c36c495a93fc0c247a3e6e5f', // sin guiones
+    ]) {
+      expect(WorkspaceIdSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+});
 
 describe('StartTerminalRequestSchema', () => {
   it('sin archivos es válido (sesión vacía) y rechaza rutas inseguras', () => {

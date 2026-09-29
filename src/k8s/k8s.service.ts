@@ -9,6 +9,7 @@ import {
   KubeConfig,
   NetworkingV1Api,
   type V1NetworkPolicy,
+  type V1PersistentVolumeClaim,
   type V1Pod,
   type V1Service,
   type V1Status,
@@ -177,6 +178,30 @@ export class K8sService {
   }
 
   /** Poll hasta que el pod esté `Running`; falla rápido si terminó o si vence el plazo. */
+  /** Espera a que un pod desaparezca del todo (ni siquiera `Terminating`). */
+  async waitForPodGone(name: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        await this.readPod(name);
+      } catch (error) {
+        if (this.isNotFound(error)) return;
+        throw error;
+      }
+      await sleep(POD_POLL_INTERVAL_MS);
+    }
+    throw new PodTimeoutError(name, timeoutMs);
+  }
+
+  private isNotFound(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 404
+    );
+  }
+
   async waitForPodRunning(name: string, timeoutMs: number): Promise<V1Pod> {
     const deadline = Date.now() + timeoutMs;
 
@@ -316,6 +341,79 @@ export class K8sService {
       if (request.body && request.body.length > 0) outgoing.write(request.body);
       outgoing.end();
     });
+  }
+
+  // MARK: - Discos persistentes (PVC), ADR 0016 ampliada.
+
+  async createPvc(
+    pvc: V1PersistentVolumeClaim,
+  ): Promise<V1PersistentVolumeClaim> {
+    return this.coreApi.createNamespacedPersistentVolumeClaim({
+      namespace: this.namespace,
+      body: pvc,
+    });
+  }
+
+  async readPvc(name: string): Promise<V1PersistentVolumeClaim> {
+    return this.coreApi.readNamespacedPersistentVolumeClaim({
+      name,
+      namespace: this.namespace,
+    });
+  }
+
+  async listPvcsByLabel(
+    labelSelector: string,
+  ): Promise<V1PersistentVolumeClaim[]> {
+    const result = await this.coreApi.listNamespacedPersistentVolumeClaim({
+      namespace: this.namespace,
+      labelSelector,
+    });
+    return result.items;
+  }
+
+  /** Nunca lanza: mismo razonamiento que deletePod. */
+  async deletePvc(name: string): Promise<void> {
+    try {
+      await this.coreApi.deleteNamespacedPersistentVolumeClaim({
+        name,
+        namespace: this.namespace,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `deletePvc(${name}) falló (probablemente ya no existía): ${String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Cambia UNA annotation de un pod vivo (JSON Patch, RFC 6902 — el cliente
+   * elige ese formato solo, es el primero que ofrece). Se usa para anotar
+   * "última actividad" sin tocar el resto del objeto. Requiere que la
+   * annotation ya exista (se fija un valor inicial al crear el pod): `replace`
+   * falla si la clave no está, a propósito — así un error de esta annotation
+   * nunca puede terminar CREANDO campos nuevos en el pod. Nunca lanza: el pod
+   * pudo borrarse justo antes (carrera con el reaper), y perder una
+   * anotación de actividad no es un error real.
+   */
+  async patchPodAnnotation(
+    name: string,
+    key: string,
+    value: string,
+  ): Promise<void> {
+    const escaped = key.replace(/~/g, '~0').replace(/\//g, '~1');
+    try {
+      await this.coreApi.patchNamespacedPod({
+        name,
+        namespace: this.namespace,
+        body: [
+          { op: 'replace', path: `/metadata/annotations/${escaped}`, value },
+        ],
+      });
+    } catch (error) {
+      this.logger.warn(
+        `patchPodAnnotation(${name}, ${key}) falló: ${String(error)}`,
+      );
+    }
   }
 
   async listServicesByLabel(labelSelector: string): Promise<V1Service[]> {

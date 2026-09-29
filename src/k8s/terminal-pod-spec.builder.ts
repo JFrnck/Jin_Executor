@@ -1,20 +1,63 @@
-import type { V1NetworkPolicy, V1Pod } from '@kubernetes/client-node';
+import type {
+  V1NetworkPolicy,
+  V1PersistentVolumeClaim,
+  V1Pod,
+} from '@kubernetes/client-node';
 import {
+  LAST_ACTIVITY_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   SERVICE_ID_LABEL,
   SERVICE_TYPE_LABEL,
   TERMINAL_CONTAINER_NAME,
   TERMINAL_TYPE_VALUE,
+  WORKSPACE_TYPE_VALUE,
   terminalPodNameForId,
+  terminalWorkspacePvcNameForId,
 } from './labels';
 
 export const TERMINAL_WORKSPACE_PATH = '/workspace';
 const WORKSPACE_VOLUME = 'workspace';
 const TMP_VOLUME = 'tmp';
 
+export interface BuildTerminalWorkspacePvcInput {
+  /** Id ESTABLE del proyecto (lo genera la app) — no cambia entre sesiones. */
+  readonly workspaceId: string;
+  readonly namespace: string;
+  /** Cuota del disco, ej. "3Gi". */
+  readonly storageSize: string;
+}
+
+/**
+ * El disco de un proyecto (2026-09-28, ADR 0016 ampliada): sobrevive a que su
+ * pod se destruya y se vuelva a crear. `local-path` (default del clúster,
+ * `WaitForFirstConsumer`) lo deja `Pending` hasta que un pod lo reclame — es
+ * el comportamiento esperado, no un error.
+ */
+export function buildTerminalWorkspacePvc(
+  input: BuildTerminalWorkspacePvcInput,
+): V1PersistentVolumeClaim {
+  return {
+    apiVersion: 'v1',
+    kind: 'PersistentVolumeClaim',
+    metadata: {
+      name: terminalWorkspacePvcNameForId(input.workspaceId),
+      namespace: input.namespace,
+      labels: {
+        [SERVICE_ID_LABEL]: input.workspaceId,
+        [SERVICE_TYPE_LABEL]: WORKSPACE_TYPE_VALUE,
+      },
+    },
+    spec: {
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: input.storageSize } },
+    },
+  };
+}
+
 export interface BuildTerminalPodSpecInput {
-  readonly terminalId: string;
+  /** Id ESTABLE del proyecto: nombra el pod Y el disco que monta. */
+  readonly workspaceId: string;
   readonly namespace: string;
   readonly image: string;
   /** Proxy de npm del clúster: la única salida de red del pod. */
@@ -22,19 +65,22 @@ export interface BuildTerminalPodSpecInput {
   readonly expiresAt: Date;
   /** Aprobación que lo originó (para enlazarlo con el audit). */
   readonly requestId?: string | undefined;
+  readonly now: Date;
 }
 
 /**
- * Pod de una sesión de terminal (ADR 0016). No corre nada por sí mismo: espera
- * comandos que el Executor le manda con `exec`. Mismas garantías que los pods
- * de servicio (sin root, sin token de ServiceAccount, PSA `restricted`, sin
- * capabilities), con tres diferencias a propósito:
+ * Pod de la terminal de un proyecto (ADR 0016). No corre nada por sí mismo:
+ * espera comandos que el Executor le manda con `exec`. Mismas garantías que
+ * los pods de servicio (sin root, sin token de ServiceAccount, PSA
+ * `restricted`, sin capabilities), con tres diferencias a propósito:
  *
- * - `restartPolicy: Never`: si el contenedor muere (p. ej. por memoria), la
- *   sesión termina en vez de reiniciarse con el disco vacío sin que se note.
- * - El espacio de trabajo es un `emptyDir`, no el PVC compartido `pnpm-store`:
- *   un paquete malicioso no puede envenenar la caché de otros pods.
- * - No hay ni env vars con secretos ni puertos: la sesión no recibe nada del
+ * - `restartPolicy: Never`: si el contenedor muere (p. ej. por memoria), el
+ *   pod termina en vez de reiniciarse con el disco a medio escribir sin que
+ *   se note.
+ * - El espacio de trabajo es el PVC propio del proyecto (`workspaceId`), no
+ *   el PVC compartido `pnpm-store` de los previews: un paquete malicioso en
+ *   un proyecto no puede envenenar el disco de otro.
+ * - No hay ni env vars con secretos ni puertos: el pod no recibe nada del
  *   sistema. Lo único que sabe es la URL del proxy de npm.
  */
 export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
@@ -42,14 +88,17 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
     apiVersion: 'v1',
     kind: 'Pod',
     metadata: {
-      name: terminalPodNameForId(input.terminalId),
+      name: terminalPodNameForId(input.workspaceId),
       namespace: input.namespace,
       labels: {
-        [SERVICE_ID_LABEL]: input.terminalId,
+        [SERVICE_ID_LABEL]: input.workspaceId,
         [SERVICE_TYPE_LABEL]: TERMINAL_TYPE_VALUE,
       },
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),
+        // Valor inicial: patchPodAnnotation() más adelante solo sabe
+        // REEMPLAZAR, nunca crear — la clave tiene que existir desde ya.
+        [LAST_ACTIVITY_ANNOTATION]: input.now.toISOString(),
         ...(input.requestId
           ? { [REQUEST_ID_ANNOTATION]: input.requestId }
           : {}),
@@ -58,7 +107,7 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
     spec: {
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
-      // Destruir la sesión es inmediato: nada dentro necesita cerrar limpio.
+      // Destruir el pod es inmediato: nada dentro necesita cerrar limpio.
       terminationGracePeriodSeconds: 1,
       securityContext: {
         runAsNonRoot: true,
@@ -68,7 +117,12 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
         seccompProfile: { type: 'RuntimeDefault' },
       },
       volumes: [
-        { name: WORKSPACE_VOLUME, emptyDir: { sizeLimit: '1Gi' } },
+        {
+          name: WORKSPACE_VOLUME,
+          persistentVolumeClaim: {
+            claimName: terminalWorkspacePvcNameForId(input.workspaceId),
+          },
+        },
         { name: TMP_VOLUME, emptyDir: { sizeLimit: '512Mi' } },
       ],
       containers: [
@@ -115,12 +169,12 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
   };
 }
 
-export function terminalEgressPolicyName(terminalId: string): string {
-  return `${terminalId}-egress`;
+export function terminalEgressPolicyName(workspaceId: string): string {
+  return `${workspaceId}-egress`;
 }
 
 export interface BuildTerminalEgressPolicyInput {
-  readonly terminalId: string;
+  readonly workspaceId: string;
   readonly namespace: string;
   readonly registryNamespace: string;
   readonly registryPort: number;
@@ -140,11 +194,11 @@ export function buildTerminalEgressPolicy(
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: {
-      name: terminalEgressPolicyName(input.terminalId),
+      name: terminalEgressPolicyName(input.workspaceId),
       namespace: input.namespace,
     },
     spec: {
-      podSelector: { matchLabels: { [SERVICE_ID_LABEL]: input.terminalId } },
+      podSelector: { matchLabels: { [SERVICE_ID_LABEL]: input.workspaceId } },
       policyTypes: ['Egress'],
       egress: [
         {

@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   buildTerminalEgressPolicy,
   buildTerminalPodSpec,
+  buildTerminalWorkspacePvc,
 } from './terminal-pod-spec.builder';
 
+const NOW = new Date('2026-09-28T11:00:00.000Z');
+
 const pod = buildTerminalPodSpec({
-  terminalId: 'abc',
+  workspaceId: 'abc',
   namespace: 'agents-sandbox',
   image: 'docker.io/library/node:22-alpine',
   npmRegistryUrl: 'http://verdaccio.registry-proxy.svc.cluster.local:4873',
   expiresAt: new Date('2026-09-28T12:00:00.000Z'),
+  now: NOW,
 });
 
 describe('buildTerminalPodSpec', () => {
@@ -28,13 +32,19 @@ describe('buildTerminalPodSpec', () => {
     });
   });
 
-  it('no expone puertos ni monta el PVC compartido pnpm-store', () => {
+  it('no expone puertos, y el espacio de trabajo es el PVC del proyecto (no el compartido pnpm-store)', () => {
     const container = pod.spec?.containers[0];
     expect(container?.ports).toBeUndefined();
-    expect(
-      pod.spec?.volumes?.some((volume) => volume.persistentVolumeClaim),
-    ).toBe(false);
-    expect(pod.spec?.volumes?.every((volume) => volume.emptyDir)).toBe(true);
+    const workspaceVolume = pod.spec?.volumes?.find(
+      (v) => v.name === 'workspace',
+    );
+    expect(workspaceVolume?.persistentVolumeClaim?.claimName).toBe(
+      'terminal-ws-abc',
+    );
+    expect(workspaceVolume?.emptyDir).toBeUndefined();
+    // /tmp sigue siendo scratch: no hace falta persistirlo.
+    const tmpVolume = pod.spec?.volumes?.find((v) => v.name === 'tmp');
+    expect(tmpVolume?.emptyDir).toBeDefined();
   });
 
   it('no le pasa nada del sistema: solo la URL del proxy y ajustes de npm', () => {
@@ -69,13 +79,17 @@ describe('buildTerminalPodSpec', () => {
     expect(pod.spec?.restartPolicy).toBe('Never');
   });
 
-  it('lleva el label de tipo terminal (no aparece en la lista de previews) y el TTL', () => {
+  it('lleva el label de tipo terminal (no aparece en la lista de previews), el TTL y una actividad inicial', () => {
     expect(pod.metadata?.labels).toEqual({
       'jin.io/service-id': 'abc',
       'jin.io/type': 'terminal',
     });
     expect(pod.metadata?.annotations?.['jin.io/expires-at']).toBe(
       '2026-09-28T12:00:00.000Z',
+    );
+    // Valor inicial: patchPodAnnotation() solo sabe REEMPLAZAR, la clave debe existir desde ya.
+    expect(pod.metadata?.annotations?.['jin.io/last-activity-at']).toBe(
+      NOW.toISOString(),
     );
     expect(pod.metadata?.name).toBe('agent-terminal-abc');
   });
@@ -84,12 +98,13 @@ describe('buildTerminalPodSpec', () => {
 describe('enlace con el audit', () => {
   it('el pod lleva la aprobación que lo originó, y sin ella no inventa nada', () => {
     const withId = buildTerminalPodSpec({
-      terminalId: 'abc',
+      workspaceId: 'abc',
       namespace: 'agents-sandbox',
       image: 'i',
       npmRegistryUrl: 'http://x:4873',
       expiresAt: new Date(),
       requestId: '11111111-1111-4111-8111-111111111111',
+      now: NOW,
     });
     expect(withId.metadata?.annotations?.['jin.io/request-id']).toBe(
       '11111111-1111-4111-8111-111111111111',
@@ -98,9 +113,30 @@ describe('enlace con el audit', () => {
   });
 });
 
+describe('buildTerminalWorkspacePvc', () => {
+  const pvc = buildTerminalWorkspacePvc({
+    workspaceId: 'abc',
+    namespace: 'agents-sandbox',
+    storageSize: '3Gi',
+  });
+
+  it('un disco por proyecto: nombre y label enlazados al mismo id que el pod', () => {
+    expect(pvc.metadata?.name).toBe('terminal-ws-abc');
+    expect(pvc.metadata?.labels).toEqual({
+      'jin.io/service-id': 'abc',
+      'jin.io/type': 'workspace',
+    });
+  });
+
+  it('ReadWriteOnce (un solo nodo) y la cuota pedida', () => {
+    expect(pvc.spec?.accessModes).toEqual(['ReadWriteOnce']);
+    expect(pvc.spec?.resources?.requests?.storage).toBe('3Gi');
+  });
+});
+
 describe('buildTerminalEgressPolicy', () => {
   const policy = buildTerminalEgressPolicy({
-    terminalId: 'abc',
+    workspaceId: 'abc',
     namespace: 'agents-sandbox',
     registryNamespace: 'registry-proxy',
     registryPort: 4873,
@@ -122,7 +158,7 @@ describe('buildTerminalEgressPolicy', () => {
     expect(JSON.stringify(policy)).not.toContain('ipBlock');
   });
 
-  it('solo alcanza a los pods de esa sesión', () => {
+  it('solo alcanza a los pods de ese proyecto', () => {
     expect(policy.spec?.podSelector).toEqual({
       matchLabels: { 'jin.io/service-id': 'abc' },
     });
