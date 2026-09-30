@@ -70,7 +70,11 @@ export class TerminalPtyService implements OnModuleDestroy {
     configService: ConfigService,
   ) {
     this.idleTimeoutMs =
-      configService.get<number>('TERMINAL_PTY_IDLE_SECONDS', 15 * 60) * 1000;
+      // 4 h = el tope del TTL de un pod: la política de "cuánto esperar sin la
+      // app" es de Jin_Core (elegida por el owner, 2026-09-30); esto es solo la
+      // red de seguridad para una sesión que quedó colgada sin nadie.
+      configService.get<number>('TERMINAL_PTY_IDLE_SECONDS', 4 * 60 * 60) *
+      1000;
   }
 
   async open(
@@ -280,6 +284,10 @@ export class TerminalPtyService implements OnModuleDestroy {
   }
 
   private checkIdle(session: PtySession): void {
+    // Una sesión abierta es un pod en uso aunque el programa esté callado
+    // (Claude Code esperando una compilación de 20 min): sin esto el reaper
+    // liberaba el pod a los 30 min de silencio, con la sesión adentro.
+    void this.terminal.notePtyActivity(session.workspaceId);
     if (Date.now() - session.lastActivity < this.idleTimeoutMs) return;
     this.logger.log(
       `Terminal ${session.id} (${session.workspaceId}): cerrada por inactividad.`,

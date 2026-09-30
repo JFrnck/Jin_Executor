@@ -57,7 +57,8 @@ function fakePty(options: PodPtyOptions): FakePty {
   return pty;
 }
 
-function setup(idleSeconds = 900) {
+/** `null`: la config no define el valor y rige el que trae el servicio por defecto. */
+function setup(idleSeconds: number | null = 900) {
   const ptys: FakePty[] = [];
   const openPty = vi.fn((_pod: string, options: PodPtyOptions) => {
     const pty = fakePty(options);
@@ -376,6 +377,31 @@ describe('TerminalPtyService (ADR 0016 ampliada, terminal interactiva)', () => {
     expect(ptys[0]?.closed).toBe(false);
 
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(ptys[0]?.closed).toBe(true);
+  });
+
+  it('una sesión abierta pero callada sigue siendo actividad del pod: se anota mientras dure (el reaper no libera el pod con la sesión adentro)', async () => {
+    vi.useFakeTimers();
+    const { service, ptys, noteActivity } = setup(4 * 60 * 60);
+    await service.open(WORKSPACE, SIZE);
+    const before = noteActivity.mock.calls.length;
+
+    // 45 minutos sin una sola tecla ni una sola línea de salida.
+    await vi.advanceTimersByTimeAsync(45 * 60_000);
+
+    expect(ptys[0]?.closed).toBe(false);
+    expect(noteActivity.mock.calls.length).toBeGreaterThan(before + 50);
+  });
+
+  it('el tope de inactividad por defecto es el del TTL máximo del pod (4 h), no 15 min', async () => {
+    vi.useFakeTimers();
+    const { service, ptys } = setup(null);
+    await service.open(WORKSPACE, SIZE);
+
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000);
+    expect(ptys[0]?.closed).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(61 * 60_000);
     expect(ptys[0]?.closed).toBe(true);
   });
 
