@@ -20,13 +20,17 @@ export type PtyStreamEvent =
 /** Devuelve `false` si quien consume no da abasto: la sesión se cierra en vez de acumular memoria. */
 export type PtyListener = (event: PtyStreamEvent) => boolean;
 
-/** Shell interactivo en el espacio de trabajo. Sin `-l`: no hay perfil de login en la imagen. */
+/**
+ * Shell interactivo en el espacio de trabajo. Sin `-l`: un shell de login en
+ * Debian reescribe el PATH y perdería `.npm-global/bin`. Usa bash si la imagen
+ * lo trae (Claude Code exige bash o zsh y busca `SHELL`); si no, `sh`.
+ */
 const PTY_COMMAND = [
   'sh',
   '-c',
   // El token de Claude Code (ADR 0017), si el owner lo guardó, se exporta acá:
   // así lo hereda la terminal sin que nadie lo teclee (no pasaría por el audit).
-  'cd "${JIN_WORKSPACE:-/workspace}" && export TERM=xterm-256color && if [ -f "$HOME/.claude-token" ]; then CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude-token")"; export CLAUDE_CODE_OAUTH_TOKEN; fi; exec sh',
+  'cd "${JIN_WORKSPACE:-/workspace}" && export TERM=xterm-256color && if [ -f "$HOME/.claude-token" ]; then CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude-token")"; export CLAUDE_CODE_OAUTH_TOKEN; fi; JIN_SHELL=sh; if command -v bash >/dev/null 2>&1; then JIN_SHELL=bash; SHELL="$(command -v bash)"; export SHELL; fi; exec "$JIN_SHELL"',
 ] as const;
 
 /** Salida que se guarda mientras nadie está suscrito (entre abrir y suscribirse, o en una reconexión). */

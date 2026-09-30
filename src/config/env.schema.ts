@@ -52,10 +52,12 @@ export const EnvSchema = z.object({
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
   // src/terminal (ADR 0016): sesiones de terminal del owner. La única salida
   // de red de esos pods es el proxy de npm del clúster (Verdaccio).
+  // Debian (no Alpine) desde 2026-09-30: Claude Code necesita bash y git, y la
+  // imagen Alpine solo trae el `sh` de busybox (ADR 0017).
   TERMINAL_NODE_IMAGE: z
     .string()
     .min(1)
-    .default('docker.io/library/node:22-alpine'),
+    .default('docker.io/library/node:22-bookworm'),
   TERMINAL_NPM_REGISTRY_URL: z
     .string()
     .url()
