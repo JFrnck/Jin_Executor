@@ -1,3 +1,7 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { K8sService, PodPty, PodPtyOptions } from '../k8s/k8s.service';
@@ -8,6 +12,9 @@ import {
 } from './terminal-pty.service';
 import type { TerminalWorkspaceService } from './terminal.service';
 
+// Armado en tiempo de ejecución: un literal con la forma de un token de Anthropic
+// lo marcan los escáneres de secretos aunque sea de mentira.
+const FAKE_TOKEN = ['sk', 'ant', 'oat01', 'ejemplo'].join('-');
 const WORKSPACE = '11111111-1111-4111-8111-111111111111';
 const OTHER_WORKSPACE = '22222222-2222-4222-8222-222222222222';
 const SIZE = { cols: 80, rows: 24 };
@@ -110,6 +117,42 @@ describe('TerminalPtyService (ADR 0016 ampliada, terminal interactiva)', () => {
       'cd "${JIN_WORKSPACE:-/workspace}"',
     );
     expect(options.command.join(' ')).toContain('TERM=xterm-256color');
+  });
+
+  it('el arranque del shell de verdad: con el archivo exporta el token (sin el salto de línea final); sin el archivo, nada', async () => {
+    const { service, openPty } = setup();
+    await service.open(WORKSPACE, SIZE);
+    const [, options] = openPty.mock.calls[0] as [string, PodPtyOptions];
+    // Se corre el MISMO texto, cambiando solo el `exec sh` final por algo que imprima.
+    const script = (options.command[2] ?? '').replace(
+      'exec sh',
+      'printf "%s" "[$CLAUDE_CODE_OAUTH_TOKEN]"',
+    );
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'jin-pty-home-')));
+    const run = () =>
+      spawnSync('sh', ['-c', script], {
+        env: { PATH: process.env.PATH, HOME: home, JIN_WORKSPACE: home },
+      });
+
+    expect(run().stdout.toString()).toBe('[]');
+    writeFileSync(join(home, '.claude-token'), `${FAKE_TOKEN}\n`);
+    expect(run().stdout.toString()).toBe(`[${FAKE_TOKEN}]`);
+  });
+
+  it('exporta el token de Claude Code desde el disco si el owner lo guardó (no se teclea: no pasa por el audit)', async () => {
+    const { service, openPty } = setup();
+    await service.open(WORKSPACE, SIZE);
+    const [, options] = openPty.mock.calls[0] as [string, PodPtyOptions];
+    const script = options.command.join(' ');
+    expect(script).toContain('[ -f "$HOME/.claude-token" ]');
+    expect(script).toContain(
+      'CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude-token")"',
+    );
+    expect(script).toContain('export CLAUDE_CODE_OAUTH_TOKEN');
+    // El shell interactivo se abre DESPUÉS de leer el token.
+    expect(script.indexOf('export CLAUDE_CODE_OAUTH_TOKEN')).toBeLessThan(
+      script.indexOf('exec sh'),
+    );
   });
 
   it('una sola terminal por workspace; otro workspace no se ve afectado', async () => {

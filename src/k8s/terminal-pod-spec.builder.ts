@@ -4,6 +4,8 @@ import type {
   V1Pod,
 } from '@kubernetes/client-node';
 import {
+  CLAUDE_LABEL,
+  CLAUDE_LABEL_VALUE,
   LAST_ACTIVITY_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
@@ -19,6 +21,17 @@ import {
 export const TERMINAL_WORKSPACE_PATH = '/workspace';
 const WORKSPACE_VOLUME = 'workspace';
 const TMP_VOLUME = 'tmp';
+
+/**
+ * Claude Code dentro del pod (ADR 0017): la ÚNICA excepción a "el pod no tiene
+ * más red que el proxy de npm". Solo existe si el owner lo pidió y lo aprobó.
+ */
+export interface ClaudeCodePodConfig {
+  /** Proxy de salida del clúster que solo deja llegar a Anthropic. */
+  readonly proxyUrl: string;
+  /** Destinos que NO pasan por él (el proxy de npm y el propio clúster). */
+  readonly noProxy: readonly string[];
+}
 
 export interface BuildTerminalWorkspacePvcInput {
   /** Id ESTABLE del proyecto (lo genera la app) — no cambia entre sesiones. */
@@ -66,6 +79,8 @@ export interface BuildTerminalPodSpecInput {
   /** Aprobación que lo originó (para enlazarlo con el audit). */
   readonly requestId?: string | undefined;
   readonly now: Date;
+  /** Presente solo si el owner pidió (y aprobó) Claude Code para esta sesión. */
+  readonly claudeCode?: ClaudeCodePodConfig | undefined;
 }
 
 /**
@@ -93,6 +108,7 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
       labels: {
         [SERVICE_ID_LABEL]: input.workspaceId,
         [SERVICE_TYPE_LABEL]: TERMINAL_TYPE_VALUE,
+        ...(input.claudeCode ? { [CLAUDE_LABEL]: CLAUDE_LABEL_VALUE } : {}),
       },
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),
@@ -130,10 +146,23 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
           name: TERMINAL_CONTAINER_NAME,
           image: input.image,
           // `exec` para que `tail` sea PID 1 y reciba la señal de borrado.
-          command: ['sh', '-c', 'exec tail -f /dev/null'],
+          command: [
+            'sh',
+            '-c',
+            input.claudeCode
+              ? // HOME y el prefijo global de npm viven en el disco del proyecto:
+                // ahí quedan la configuración de Claude y `claude` instalado.
+                `mkdir -p ${TERMINAL_WORKSPACE_PATH}/.home ${TERMINAL_WORKSPACE_PATH}/.npm-global && exec tail -f /dev/null`
+              : 'exec tail -f /dev/null',
+          ],
           workingDir: TERMINAL_WORKSPACE_PATH,
           env: [
-            { name: 'HOME', value: '/tmp' },
+            {
+              name: 'HOME',
+              value: input.claudeCode
+                ? `${TERMINAL_WORKSPACE_PATH}/.home`
+                : '/tmp',
+            },
             { name: 'npm_config_registry', value: input.npmRegistryUrl },
             // corepack (pnpm/yarn) también sale por el proxy, no a npmjs.org.
             { name: 'COREPACK_NPM_REGISTRY', value: input.npmRegistryUrl },
@@ -160,6 +189,7 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
             { name: 'npm_config_maxsockets', value: '8' },
             { name: 'npm_config_fetch_retries', value: '5' },
             { name: 'CI', value: 'true' },
+            ...(input.claudeCode ? claudeCodeEnv(input.claudeCode) : []),
           ],
           volumeMounts: [
             { name: WORKSPACE_VOLUME, mountPath: TERMINAL_WORKSPACE_PATH },
@@ -182,6 +212,29 @@ export function buildTerminalPodSpec(input: BuildTerminalPodSpecInput): V1Pod {
   };
 }
 
+/** Variables de Claude Code (ADR 0017). Ninguna es un secreto: el token lo pone el owner después, dentro del pod. */
+function claudeCodeEnv(
+  config: ClaudeCodePodConfig,
+): { name: string; value: string }[] {
+  const noProxy = config.noProxy.join(',');
+  return [
+    { name: 'HTTPS_PROXY', value: config.proxyUrl },
+    { name: 'https_proxy', value: config.proxyUrl },
+    { name: 'NO_PROXY', value: noProxy },
+    { name: 'no_proxy', value: noProxy },
+    { name: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', value: '1' },
+    { name: 'DISABLE_AUTOUPDATER', value: '1' },
+    {
+      name: 'npm_config_prefix',
+      value: `${TERMINAL_WORKSPACE_PATH}/.npm-global`,
+    },
+    {
+      name: 'PATH',
+      value: `${TERMINAL_WORKSPACE_PATH}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+    },
+  ];
+}
+
 export function terminalEgressPolicyName(workspaceId: string): string {
   return `${workspaceId}-egress`;
 }
@@ -191,6 +244,13 @@ export interface BuildTerminalEgressPolicyInput {
   readonly namespace: string;
   readonly registryNamespace: string;
   readonly registryPort: number;
+  /** Solo con Claude Code (ADR 0017): el proxy de salida a Anthropic. */
+  readonly claudeEgress?:
+    | {
+        readonly namespace: string;
+        readonly port: number;
+      }
+    | undefined;
 }
 
 /**
@@ -229,6 +289,30 @@ export function buildTerminalEgressPolicy(
           ],
           ports: [{ protocol: 'TCP', port: input.registryPort }],
         },
+        // Claude Code (ADR 0017): la única salida ADICIONAL, hacia el proxy que
+        // solo deja llegar a los dominios de Anthropic. Sin la bandera no existe.
+        ...(input.claudeEgress
+          ? [
+              {
+                to: [
+                  {
+                    namespaceSelector: {
+                      matchLabels: {
+                        'kubernetes.io/metadata.name':
+                          input.claudeEgress.namespace,
+                      },
+                    },
+                    podSelector: {
+                      matchLabels: {
+                        'app.kubernetes.io/name': 'claude-egress',
+                      },
+                    },
+                  },
+                ],
+                ports: [{ protocol: 'TCP', port: input.claudeEgress.port }],
+              },
+            ]
+          : []),
       ],
     },
   };

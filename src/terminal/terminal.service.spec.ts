@@ -146,6 +146,9 @@ function config(overrides: Record<string, unknown> = {}): ConfigService {
     TERMINAL_NPM_REGISTRY_URL:
       'http://verdaccio.registry-proxy.svc.cluster.local:4873',
     TERMINAL_REGISTRY_NAMESPACE: 'registry-proxy',
+    TERMINAL_CLAUDE_EGRESS_URL:
+      'http://claude-egress.claude-egress.svc.cluster.local:3128',
+    TERMINAL_CLAUDE_EGRESS_NAMESPACE: 'claude-egress',
     TERMINAL_DEFAULT_TTL_SECONDS: 3600,
     TERMINAL_MAX_TTL_SECONDS: 14400,
     TERMINAL_MAX_CONCURRENT: 1,
@@ -877,5 +880,52 @@ describe('TerminalWorkspaceService.stopPod / deleteWorkspace', () => {
       'deletePod',
       'deletePvc',
     ]);
+  });
+});
+
+describe('TerminalWorkspaceService.start — Claude Code (ADR 0017)', () => {
+  it('sin la bandera: ni label, ni proxy, ni regla de salida a Anthropic', async () => {
+    const { k8s, mocks } = fakeK8s({ scripts: [() => 0] });
+    const info = await service(k8s).start('c0', {
+      files: {},
+      ttlSeconds: 1800,
+    });
+
+    const pod = mocks.createPod.mock.calls[0]?.[0] as V1Pod;
+    expect(pod.metadata?.labels?.['jin.io/claude']).toBeUndefined();
+    const policy = mocks.createNetworkPolicy.mock.calls[0]?.[0] as {
+      spec: { egress: unknown[] };
+    };
+    expect(policy.spec.egress).toHaveLength(1);
+    expect(info.claudeCode).toBe(false);
+  });
+
+  it('con la bandera: el pod lleva el label y el proxy, la política suma la regla, y la info lo dice', async () => {
+    const { k8s, mocks } = fakeK8s({ scripts: [() => 0] });
+    const info = await service(k8s).start('c1', {
+      files: {},
+      ttlSeconds: 1800,
+      claudeCode: true,
+    });
+
+    const pod = mocks.createPod.mock.calls[0]?.[0] as V1Pod;
+    expect(pod.metadata?.labels?.['jin.io/claude']).toBe('enabled');
+    const env = Object.fromEntries(
+      (pod.spec?.containers[0]?.env ?? []).map((e) => [e.name, e.value]),
+    );
+    expect(env.HTTPS_PROXY).toBe(
+      'http://claude-egress.claude-egress.svc.cluster.local:3128',
+    );
+    expect(env.NO_PROXY).toContain(
+      'verdaccio.registry-proxy.svc.cluster.local',
+    );
+    const policy = mocks.createNetworkPolicy.mock.calls[0]?.[0] as {
+      spec: { egress: { ports: { port: number }[] }[] };
+    };
+    expect(policy.spec.egress).toHaveLength(2);
+    expect(policy.spec.egress[1]?.ports).toEqual([
+      { protocol: 'TCP', port: 3128 },
+    ]);
+    expect(info.claudeCode).toBe(true);
   });
 });

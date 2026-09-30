@@ -168,3 +168,142 @@ describe('buildTerminalEgressPolicy', () => {
     });
   });
 });
+
+describe('Claude Code en el pod (ADR 0017)', () => {
+  const claude = {
+    proxyUrl: 'http://claude-egress.claude-egress.svc.cluster.local:3128',
+    noProxy: [
+      'verdaccio.registry-proxy.svc.cluster.local',
+      '.svc.cluster.local',
+      'localhost',
+      '127.0.0.1',
+    ],
+  };
+  const withClaude = buildTerminalPodSpec({
+    workspaceId: 'abc',
+    namespace: 'agents-sandbox',
+    image: 'docker.io/library/node:22-alpine',
+    npmRegistryUrl: 'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    expiresAt: new Date('2026-09-28T12:00:00.000Z'),
+    now: NOW,
+    claudeCode: claude,
+  });
+  const envOf = (p: typeof pod): Record<string, string | undefined> =>
+    Object.fromEntries(
+      (p.spec?.containers[0]?.env ?? []).map((e) => [e.name, e.value]),
+    );
+
+  it('SIN la bandera no hay label, ni proxy, ni HOME en el disco: el pod sigue sin salida a Anthropic', () => {
+    expect(pod.metadata?.labels?.['jin.io/claude']).toBeUndefined();
+    const env = envOf(pod);
+    for (const name of [
+      'HTTPS_PROXY',
+      'https_proxy',
+      'NO_PROXY',
+      'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+      'DISABLE_AUTOUPDATER',
+      'npm_config_prefix',
+      'PATH',
+    ]) {
+      expect(env[name]).toBeUndefined();
+    }
+    expect(env.HOME).toBe('/tmp');
+    expect(pod.spec?.containers[0]?.command).toEqual([
+      'sh',
+      '-c',
+      'exec tail -f /dev/null',
+    ]);
+  });
+
+  it('CON la bandera: label jin.io/claude, proxy de salida y HOME/npm global en el disco del proyecto', () => {
+    expect(withClaude.metadata?.labels).toMatchObject({
+      'jin.io/type': 'terminal',
+      'jin.io/claude': 'enabled',
+    });
+    const env = envOf(withClaude);
+    expect(env.HTTPS_PROXY).toBe(claude.proxyUrl);
+    expect(env.https_proxy).toBe(claude.proxyUrl);
+    expect(env.NO_PROXY).toBe(claude.noProxy.join(','));
+    expect(env.no_proxy).toBe(env.NO_PROXY);
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+    expect(env.DISABLE_AUTOUPDATER).toBe('1');
+    expect(env.HOME).toBe('/workspace/.home');
+    expect(env.npm_config_prefix).toBe('/workspace/.npm-global');
+    expect(env.PATH?.startsWith('/workspace/.npm-global/bin:')).toBe(true);
+    expect(env.PATH).toContain('/usr/local/bin');
+    // npm sigue yendo a su propio proxy, no al de Anthropic.
+    expect(env.npm_config_registry).toBe(
+      'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    );
+    expect(env.NO_PROXY).toContain(
+      'verdaccio.registry-proxy.svc.cluster.local',
+    );
+  });
+
+  it('crea HOME y el prefijo global de npm al arrancar el pod', () => {
+    const command = withClaude.spec?.containers[0]?.command?.join(' ') ?? '';
+    expect(command).toContain(
+      'mkdir -p /workspace/.home /workspace/.npm-global',
+    );
+    expect(command).toContain('exec tail -f /dev/null');
+  });
+
+  it('el token NO viene con el pod: ninguna variable lo lleva y nada usa valueFrom (lo guarda el owner después)', () => {
+    const containerEnv = withClaude.spec?.containers[0]?.env ?? [];
+    expect(containerEnv.some((entry) => entry.valueFrom)).toBe(false);
+    for (const entry of containerEnv) {
+      expect(entry.name).not.toMatch(
+        /OAUTH|ANTHROPIC|API_KEY|SECRET|PASSWORD/i,
+      );
+      expect(entry.value ?? '').not.toMatch(/sk-ant/);
+    }
+  });
+
+  it('sigue cumpliendo PSA restricted (la excepción es solo de red)', () => {
+    expect(withClaude.spec?.automountServiceAccountToken).toBe(false);
+    expect(withClaude.spec?.containers[0]?.securityContext).toEqual({
+      allowPrivilegeEscalation: false,
+      privileged: false,
+      capabilities: { drop: ['ALL'] },
+    });
+  });
+
+  describe('NetworkPolicy', () => {
+    const base = {
+      workspaceId: 'abc',
+      namespace: 'agents-sandbox',
+      registryNamespace: 'registry-proxy',
+      registryPort: 4873,
+    };
+
+    it('sin la bandera sigue habiendo UNA sola regla de salida (el proxy de npm)', () => {
+      expect(buildTerminalEgressPolicy(base).spec?.egress).toHaveLength(1);
+    });
+
+    it('con la bandera se suma UNA regla hacia el proxy de Anthropic, y nada hacia internet', () => {
+      const policy = buildTerminalEgressPolicy({
+        ...base,
+        claudeEgress: { namespace: 'claude-egress', port: 3128 },
+      });
+      expect(policy.spec?.egress).toHaveLength(2);
+      expect(policy.spec?.egress?.[1]).toEqual({
+        to: [
+          {
+            namespaceSelector: {
+              matchLabels: { 'kubernetes.io/metadata.name': 'claude-egress' },
+            },
+            podSelector: {
+              matchLabels: { 'app.kubernetes.io/name': 'claude-egress' },
+            },
+          },
+        ],
+        ports: [{ protocol: 'TCP', port: 3128 }],
+      });
+      // La regla del proxy de npm no cambia.
+      expect(policy.spec?.egress?.[0]).toEqual(
+        buildTerminalEgressPolicy(base).spec?.egress?.[0],
+      );
+      expect(JSON.stringify(policy)).not.toContain('ipBlock');
+    });
+  });
+});

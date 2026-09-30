@@ -31,6 +31,8 @@ export interface TerminalWorkspaceInfo {
   readonly exposure: TerminalExposure | null;
   /** Último comando/servicio/petición al pod actual; null si no hay pod. Lo usa el reaper para liberar por inactividad. */
   readonly lastActivityAt: string | null;
+  /** El pod actual se abrió con Claude Code (label `jin.io/claude`). */
+  readonly claudeCode: boolean;
 }
 
 /** Una línea del stream NDJSON de `exec` (una por chunk de salida, y una final). */
