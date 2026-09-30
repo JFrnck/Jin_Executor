@@ -169,7 +169,7 @@ export class TerminalWorkspaceService {
   ) {
     this.image = configService.get<string>(
       'TERMINAL_NODE_IMAGE',
-      'docker.io/library/node:22-alpine',
+      'docker.io/library/node:22-bookworm',
     );
     this.registryUrl = configService.get<string>(
       'TERMINAL_NPM_REGISTRY_URL',

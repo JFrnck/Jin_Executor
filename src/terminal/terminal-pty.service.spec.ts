@@ -1,5 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
@@ -123,9 +129,9 @@ describe('TerminalPtyService (ADR 0016 ampliada, terminal interactiva)', () => {
     const { service, openPty } = setup();
     await service.open(WORKSPACE, SIZE);
     const [, options] = openPty.mock.calls[0] as [string, PodPtyOptions];
-    // Se corre el MISMO texto, cambiando solo el `exec sh` final por algo que imprima.
+    // Se corre el MISMO texto, cambiando solo el `exec` final por algo que imprima.
     const script = (options.command[2] ?? '').replace(
-      'exec sh',
+      'exec "$JIN_SHELL"',
       'printf "%s" "[$CLAUDE_CODE_OAUTH_TOKEN]"',
     );
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'jin-pty-home-')));
@@ -151,8 +157,41 @@ describe('TerminalPtyService (ADR 0016 ampliada, terminal interactiva)', () => {
     expect(script).toContain('export CLAUDE_CODE_OAUTH_TOKEN');
     // El shell interactivo se abre DESPUÉS de leer el token.
     expect(script.indexOf('export CLAUDE_CODE_OAUTH_TOKEN')).toBeLessThan(
-      script.indexOf('exec sh'),
+      script.indexOf('exec "$JIN_SHELL"'),
     );
+  });
+
+  it('abre bash (y exporta SHELL) si la imagen lo trae —Claude Code lo exige—; si no, sh', async () => {
+    const { service, openPty } = setup();
+    await service.open(WORKSPACE, SIZE);
+    const [, options] = openPty.mock.calls[0] as [string, PodPtyOptions];
+    const script = (options.command[2] ?? '').replace(
+      'exec "$JIN_SHELL"',
+      'printf "%s|%s" "$JIN_SHELL" "$SHELL"',
+    );
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'jin-pty-shell-')));
+    const shPath = spawnSync('sh', ['-c', 'command -v sh'])
+      .stdout.toString()
+      .trim();
+    const catPath = spawnSync('sh', ['-c', 'command -v cat'])
+      .stdout.toString()
+      .trim();
+    const run = (bin: string) =>
+      spawnSync(shPath, ['-c', script], {
+        env: { PATH: bin, HOME: home, JIN_WORKSPACE: home },
+      }).stdout.toString();
+
+    const withBash = join(home, 'con-bash');
+    mkdirSync(withBash);
+    symlinkSync(shPath, join(withBash, 'bash'));
+    symlinkSync(catPath, join(withBash, 'cat'));
+    expect(run(withBash)).toBe(`bash|${join(withBash, 'bash')}`);
+
+    const withoutBash = join(home, 'sin-bash');
+    mkdirSync(withoutBash);
+    symlinkSync(catPath, join(withoutBash, 'cat'));
+    // (Algunos `sh` rellenan SHELL solos: lo que importa es que no se eligió bash.)
+    expect(run(withoutBash).split('|')[0]).toBe('sh');
   });
 
   it('una sola terminal por workspace; otro workspace no se ve afectado', async () => {
