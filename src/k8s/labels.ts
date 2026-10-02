@@ -36,6 +36,9 @@ export const MAIL_EGRESS_LABEL_VALUE = 'enabled';
 export const NPM_LABEL = 'jin.io/npm';
 export const NPM_LABEL_VALUE = 'enabled';
 
+/** Motor de base de datos de una demo (redis|postgres|mongodb|sqlite); ausente si no pidió. */
+export const DB_ENGINE_ANNOTATION = 'jin.io/db-engine';
+
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }

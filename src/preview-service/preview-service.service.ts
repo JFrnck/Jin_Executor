@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { V1Pod } from '@kubernetes/client-node';
@@ -14,6 +14,7 @@ import {
   serviceEgressPolicyName,
 } from '../k8s/network-policy.builder';
 import {
+  DB_ENGINE_ANNOTATION,
   JINSERVER_TLS_SECRET_NAME,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
@@ -54,6 +55,7 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
     new Date(0).toISOString();
   const expired = new Date(expiresAt).getTime() <= Date.now();
   const requestId = pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION];
+  const db = pod.metadata?.annotations?.[DB_ENGINE_ANNOTATION];
   return {
     id: serviceId,
     slug,
@@ -61,6 +63,7 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
     status: expired ? 'expired' : 'running',
     expiresAt,
     ...(requestId ? { requestId } : {}),
+    ...(db ? { db } : {}),
   };
 }
 
@@ -156,6 +159,11 @@ export class PreviewServiceLifecycleService {
       requestId: request.requestId,
       mailEgress: request.mailEgress,
       npmRegistryUrl: request.npm ? this.npmRegistryUrl : undefined,
+      // Contraseña aleatoria POR DEMO (no es un secreto real: solo evita que otra demo del
+      // clúster entre; la base solo escucha en 127.0.0.1 del propio pod).
+      db: request.db
+        ? { engine: request.db, password: randomBytes(16).toString('hex') }
+        : undefined,
     });
     const networkPolicy = buildServiceIngressNetworkPolicy({
       serviceId,
@@ -196,6 +204,7 @@ export class PreviewServiceLifecycleService {
       url: `https://${slug}.jinserver.com`,
       status: 'running',
       expiresAt: expiresAt.toISOString(),
+      ...(request.db ? { db: request.db } : {}),
     };
   }
 

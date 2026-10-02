@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEMO_DB_ENGINES } from '../k8s/demo-db.builder';
 import { isSafeRelativePath } from './tar-payload';
 
 /** Contrato de POST /services (Fase 5.5, ADR 0006) — mismo criterio que ExecuteRequestSchema: toda entrada HTTP se valida con Zod, en el borde. */
@@ -35,6 +36,11 @@ export const StartPreviewServiceRequestSchema = z.object({
   // las variables de npm y una NetworkPolicy con SOLO esa salida. Los scripts de
   // instalación (preinstall/postinstall) siguen desactivados.
   npm: z.boolean().optional(),
+  // Base de datos de DEMO (datos de prueba, no producción): sqlite = archivo en
+  // /workspace/data; redis/postgres/mongodb = contenedor auxiliar dentro del mismo
+  // pod, solo en 127.0.0.1, con una contraseña aleatoria por demo y datos que viven
+  // lo que viva el pod. La app recibe DATABASE_URL / REDIS_URL / MONGODB_URI.
+  db: z.enum(DEMO_DB_ENGINES).optional(),
   // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
   requestId: z.string().uuid().optional(),
 });
