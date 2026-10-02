@@ -483,16 +483,28 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
         }
       };
 
+      // El tamaño del TTY lo aplica Kubernetes un instante DESPUÉS de arrancar el
+      // shell: un `stty size` escrito demasiado pronto (CI lento) sale con el tamaño
+      // viejo y nunca más. Se vuelve a preguntar hasta ver el esperado.
+      const waitForSize = async (rows: number, cols: number): Promise<void> => {
+        const needle = `${rows} ${cols}`;
+        const deadline = Date.now() + 30_000;
+        while (!out.includes(needle)) {
+          if (Date.now() > deadline)
+            throw new Error(`No apareció "${needle}". Salida:\n${out}`);
+          type('stty size\r');
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      };
+
       // Un TTY de verdad, con el tamaño pedido.
-      type('test -t 0 && echo TTY_OK; stty size\r');
+      type('test -t 0 && echo TTY_OK\r');
       await waitFor('TTY_OK');
-      await waitFor('30 100');
+      await waitForSize(30, 100);
 
       // El resize llega al pod.
       pty.resize(id, ptyId, { cols: 120, rows: 40 });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      type('stty size\r');
-      await waitFor('40 120');
+      await waitForSize(40, 120);
 
       // Un prompt que espera lo que se teclea (lo que no podía la terminal por comandos).
       type('read -p "nombre: " N; echo hola-$N\r');
