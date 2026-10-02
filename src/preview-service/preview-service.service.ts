@@ -31,6 +31,7 @@ import {
   PreviewServiceExportError,
   PreviewServiceLimitError,
   PreviewServiceNotFoundError,
+  PreviewServiceQuotaError,
   PreviewServiceTtlCapError,
 } from './errors';
 import { collectExec } from '../k8s/pod-exec';
@@ -65,6 +66,17 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
     ...(requestId ? { requestId } : {}),
     ...(db ? { db } : {}),
   };
+}
+
+/** "requested: limits.cpu=1500m, used: limits.cpu=2200m, limited: limits.cpu=3" → texto corto, o null si no es de cuota. */
+function quotaDetail(error: unknown): string | null {
+  const text = String(error);
+  if (!text.includes('exceeded quota')) return null;
+  const match =
+    /requested: ([^,\\"]+), used: ([^,\\"]+), limited: ([^,\\"]+)/.exec(text);
+  return match
+    ? `pide ${match[1]}, en uso ${match[2]}, tope ${match[3]}`
+    : 'cuota de agents-sandbox agotada';
 }
 
 /**
@@ -182,21 +194,29 @@ export class PreviewServiceLifecycleService {
     this.logger.log(
       `Levantando pod de servicio ${servicePodNameForId(serviceId)} (slug: ${slug}, TTL: ${ttlSeconds}s)`,
     );
-    // La salida a npm existe ANTES que el pod: `npm install` es lo primero que corre.
-    if (request.npm) {
-      await this.k8s.createNetworkPolicy(
-        buildServiceNpmEgressPolicy({
-          serviceId,
-          namespace,
-          registryNamespace: this.registryNamespace,
-          registryPort: this.registryPort,
-        }),
-      );
+    try {
+      // La salida a npm existe ANTES que el pod: `npm install` es lo primero que corre.
+      if (request.npm) {
+        await this.k8s.createNetworkPolicy(
+          buildServiceNpmEgressPolicy({
+            serviceId,
+            namespace,
+            registryNamespace: this.registryNamespace,
+            registryPort: this.registryPort,
+          }),
+        );
+      }
+      await this.k8s.createPod(podSpec);
+      await this.k8s.createNetworkPolicy(networkPolicy);
+      await this.k8s.createService(service);
+      await this.k8s.createIngressRoute(ingressRoute);
+    } catch (error) {
+      // Nada a medias: lo que ya se creó (policies, Service…) no se queda huérfano, y un
+      // 403 de cuota llega como un error claro en vez de un 500 opaco.
+      await this.stop(serviceId);
+      const detail = quotaDetail(error);
+      throw detail === null ? error : new PreviewServiceQuotaError(detail);
     }
-    await this.k8s.createPod(podSpec);
-    await this.k8s.createNetworkPolicy(networkPolicy);
-    await this.k8s.createService(service);
-    await this.k8s.createIngressRoute(ingressRoute);
 
     return {
       id: serviceId,

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   buildDemoDb,
@@ -144,5 +145,24 @@ describe('buildDemoDb', () => {
     }
     // sqlite no usa contraseña: no la valida.
     expect(() => buildDemoDb('sqlite', '')).not.toThrow();
+  });
+
+  it('mongodb: el sondeo solo pasa con el servidor DEFINITIVO (--auth) y no se reconoce a sí mismo en /proc', () => {
+    const probe =
+      buildDemoDb('mongodb', PASSWORD).sidecar?.startupProbe?.exec
+        ?.command?.[2] ?? '';
+    expect(probe).toContain('/proc/[0-9]*/cmdline');
+    // El fragmento de grep del sondeo, ejecutado de verdad contra distintas "listas de procesos".
+    const grepPart = /grep -qx -e '[^']+'/.exec(probe)?.[0] ?? '';
+    expect(grepPart).not.toBe('');
+    const run = (lines: string[]) =>
+      spawnSync('sh', [
+        '-c',
+        `printf '%s\\n' ${lines.map((l) => `'${l}'`).join(' ')} | ${grepPart}`,
+      ]).status;
+    expect(run(['mongod', '--bind_ip', '127.0.0.1', '--auth'])).toBe(0); // el definitivo
+    expect(run(['mongod', '--fork', '--config', '/tmp/temp.json'])).toBe(1); // el temporal
+    // El propio grep aparece en /proc con su patrón como argumento: no debe contarse a sí mismo.
+    expect(run(['grep', '-qx', '-e', '--aut[h]'])).toBe(1);
   });
 });
