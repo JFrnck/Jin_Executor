@@ -215,7 +215,25 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
       // Elimina TODO (pod + disco): este proyecto no se retoma en otro test.
       await terminal.deleteWorkspace(id);
     }
-    expect((await terminal.list()).find((w) => w.id === id)).toBeUndefined();
+    const leftover = (await terminal.list()).find((w) => w.id === id);
+    if (leftover) {
+      // Diagnóstico para el CI (fallo intermitente 2026-10-02): el estado REAL del disco.
+      const pvcs = await testK3s.coreApi.listNamespacedPersistentVolumeClaim({
+        namespace: AGENTS_SANDBOX_NAMESPACE,
+      });
+      const mine = pvcs.items
+        .filter((pvc) => pvc.metadata?.labels?.['jin.io/service-id'] === id)
+        .map((pvc) => ({
+          name: pvc.metadata?.name,
+          phase: pvc.status?.phase,
+          deletionTimestamp: pvc.metadata?.deletionTimestamp,
+          finalizers: pvc.metadata?.finalizers,
+          created: pvc.metadata?.creationTimestamp,
+        }));
+      throw new Error(
+        `El workspace ${id} sigue listado tras deleteWorkspace. PVC: ${JSON.stringify(mine)}`,
+      );
+    }
     const services = await testK3s.coreApi.listNamespacedService({
       namespace: AGENTS_SANDBOX_NAMESPACE,
     });

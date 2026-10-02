@@ -493,11 +493,12 @@ export class K8sService {
   }
 
   /**
-   * Borra el disco de un proyecto y SE ASEGURA: ignora un 404 (ya no estaba) y
-   * reintenta los errores pasajeros; si no lo logra, LANZA. Un proyecto "eliminado"
-   * cuyo disco sigue ahí (sin avisar) es peor que un error visible — además de ser
-   * la causa de un test de integración intermitente (2026-10-02: `deletePvc`
-   * tragaba un error del API server y el workspace seguía listado).
+   * Borra el disco de un proyecto y COMPRUEBA que se fue: tras pedir el borrado,
+   * lee el PVC y exige que ya no exista (404) o que esté terminando
+   * (`deletionTimestamp`, a la espera de que el pod suelte su finalizer). Si sigue
+   * vivo o el API falla, reintenta; si no lo logra, LANZA con el motivo. Un
+   * proyecto "eliminado" cuyo disco sigue ahí sin avisar es peor que un error
+   * visible (el borrado anterior tragaba cualquier error del API server).
    */
   async deletePvcOrThrow(name: string, attempts = 4): Promise<void> {
     let lastError: unknown;
@@ -507,15 +508,31 @@ export class K8sService {
           name,
           namespace: this.namespace,
         });
-        return;
+      } catch (error) {
+        if (!this.isNotFound(error)) {
+          lastError = error;
+          this.logger.warn(
+            `deletePvc(${name}) intento ${attempt}/${attempts} falló: ${String(error)}`,
+          );
+          if (attempt < attempts) await sleep(500 * attempt);
+          continue;
+        }
+      }
+      // Postcondición: el PVC ya no está, o está terminando.
+      try {
+        const pvc = await this.readPvc(name);
+        if (pvc.metadata?.deletionTimestamp) return;
+        lastError = new Error(
+          `el disco ${name} sigue vivo tras pedir su borrado (sin deletionTimestamp)`,
+        );
+        this.logger.warn(
+          `deletePvc(${name}) intento ${attempt}/${attempts}: ${String(lastError)}`,
+        );
       } catch (error) {
         if (this.isNotFound(error)) return;
         lastError = error;
-        this.logger.warn(
-          `deletePvc(${name}) intento ${attempt}/${attempts} falló: ${String(error)}`,
-        );
-        if (attempt < attempts) await sleep(500 * attempt);
       }
+      if (attempt < attempts) await sleep(500 * attempt);
     }
     throw lastError instanceof Error
       ? lastError
