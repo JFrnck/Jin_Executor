@@ -4,6 +4,8 @@ import {
   SERVICE_EXPIRES_AT_ANNOTATION,
   MAIL_EGRESS_LABEL,
   MAIL_EGRESS_LABEL_VALUE,
+  NPM_LABEL,
+  NPM_LABEL_VALUE,
   SERVICE_ID_LABEL,
   SERVICE_SLUG_ANNOTATION,
   SERVICE_TYPE_LABEL,
@@ -36,6 +38,8 @@ export interface BuildServicePodSpecInput {
   readonly requestId?: string | undefined;
   /** Puede salir al proxy de correo (`mail-egress`): pone el label que su NetworkPolicy exige. */
   readonly mailEgress?: boolean | undefined;
+  /** URL del proxy de npm: con ella el pod instala dependencias (label + variables de npm). */
+  readonly npmRegistryUrl?: string | undefined;
 }
 
 /**
@@ -53,6 +57,24 @@ export interface BuildServicePodSpecInput {
  * de comando en sí es literal y fijo, el payload solo se expande como
  * variable de entorno entre comillas dobles.
  */
+/**
+ * Variables de npm de un pod de servicio con `npm`. `ignore-scripts` va SIEMPRE:
+ * este pod está expuesto a internet y ningún preinstall/postinstall de una
+ * dependencia debe correr dentro (las dependencias con binarios nativos que lo
+ * necesiten no instalan: es el costo aceptado).
+ */
+function npmEnv(registryUrl: string) {
+  return [
+    { name: 'npm_config_registry', value: registryUrl },
+    { name: 'npm_config_ignore_scripts', value: 'true' },
+    { name: 'npm_config_audit', value: 'false' },
+    { name: 'npm_config_fund', value: 'false' },
+    { name: 'npm_config_update_notifier', value: 'false' },
+    { name: 'npm_config_maxsockets', value: '8' },
+    { name: 'npm_config_fetch_retries', value: '5' },
+  ];
+}
+
 export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
   return {
     apiVersion: 'v1',
@@ -66,6 +88,7 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
         ...(input.mailEgress
           ? { [MAIL_EGRESS_LABEL]: MAIL_EGRESS_LABEL_VALUE }
           : {}),
+        ...(input.npmRegistryUrl ? { [NPM_LABEL]: NPM_LABEL_VALUE } : {}),
       },
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),
@@ -144,6 +167,7 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
               name: 'npm_config_cache',
               value: `${PNPM_STORE_MOUNT_PATH}/npm-cache`,
             },
+            ...(input.npmRegistryUrl ? npmEnv(input.npmRegistryUrl) : []),
           ],
           volumeMounts: [
             { name: WORKSPACE_VOLUME, mountPath: WORKSPACE_MOUNT_PATH },

@@ -52,6 +52,16 @@ export const EnvSchema = z.object({
     // contado desde que se creó.
     .max(7 * 24 * 60 * 60, 'El cap duro de un pod de servicio es 7 días')
     .default(24 * 60 * 60),
+  // Demos con backend (2026-10-02): los pods de servicio con `npm` instalan
+  // dependencias por el MISMO Verdaccio que las terminales.
+  PREVIEW_SERVICE_NPM_REGISTRY_URL: z
+    .string()
+    .url()
+    .default('http://verdaccio.registry-proxy.svc.cluster.local:4873'),
+  PREVIEW_SERVICE_REGISTRY_NAMESPACE: z
+    .string()
+    .min(1)
+    .default('registry-proxy'),
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
   // src/terminal (ADR 0016): sesiones de terminal del owner. La única salida
   // de red de esos pods es el proxy de npm del clúster (Verdaccio).

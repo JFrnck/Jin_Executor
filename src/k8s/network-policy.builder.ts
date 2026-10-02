@@ -90,3 +90,53 @@ export function buildServiceIngressNetworkPolicy(
     },
   };
 }
+
+export function serviceEgressPolicyName(serviceId: string): string {
+  return `${serviceId}-egress`;
+}
+
+export interface BuildServiceNpmEgressPolicyInput {
+  readonly serviceId: string;
+  readonly namespace: string;
+  readonly registryNamespace: string;
+  readonly registryPort: number;
+}
+
+/**
+ * La ÚNICA salida de un pod de servicio con `npm` (además de DNS, que ya concede
+ * la policy del namespace): el pod de Verdaccio, en su puerto. Mismo patrón que
+ * `buildTerminalEgressPolicy`; sin regla hacia internet.
+ */
+export function buildServiceNpmEgressPolicy(
+  input: BuildServiceNpmEgressPolicyInput,
+): V1NetworkPolicy {
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: {
+      name: serviceEgressPolicyName(input.serviceId),
+      namespace: input.namespace,
+    },
+    spec: {
+      podSelector: { matchLabels: { [SERVICE_ID_LABEL]: input.serviceId } },
+      policyTypes: ['Egress'],
+      egress: [
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: {
+                  'kubernetes.io/metadata.name': input.registryNamespace,
+                },
+              },
+              podSelector: {
+                matchLabels: { 'app.kubernetes.io/name': 'verdaccio' },
+              },
+            },
+          ],
+          ports: [{ protocol: 'TCP', port: input.registryPort }],
+        },
+      ],
+    },
+  };
+}

@@ -27,6 +27,15 @@ export const JINSERVER_TLS_SECRET_NAME = 'wildcard-jinserver-com-tls';
 export const MAIL_EGRESS_LABEL = 'jin.io/mail-egress';
 export const MAIL_EGRESS_LABEL_VALUE = 'enabled';
 
+/**
+ * Pod de servicio que puede instalar dependencias por el proxy de npm
+ * (Verdaccio), 2026-10-02: lo pone el Executor SOLO si el pedido aprobado usaba
+ * `npm`. La NetworkPolicy de ingreso de Verdaccio (Jin_Infra) solo acepta pods de
+ * servicio con este label.
+ */
+export const NPM_LABEL = 'jin.io/npm';
+export const NPM_LABEL_VALUE = 'enabled';
+
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }

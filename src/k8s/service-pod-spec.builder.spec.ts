@@ -47,6 +47,31 @@ describe('buildServicePodSpec', () => {
     });
   });
 
+  it('npmRegistryUrl: label jin.io/npm y variables de npm con ignore-scripts SIEMPRE; sin la URL, nada de eso', () => {
+    const plain = buildServicePodSpec(baseInput);
+    expect(plain.metadata?.labels?.['jin.io/npm']).toBeUndefined();
+    expect(
+      (plain.spec?.containers[0]?.env ?? []).some((e) =>
+        e.name.startsWith('npm_config_registry'),
+      ),
+    ).toBe(false);
+
+    const pod = buildServicePodSpec({
+      ...baseInput,
+      npmRegistryUrl: 'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    });
+    expect(pod.metadata?.labels?.['jin.io/npm']).toBe('enabled');
+    const env = Object.fromEntries(
+      (pod.spec?.containers[0]?.env ?? []).map((e) => [e.name, e.value]),
+    );
+    expect(env.npm_config_registry).toBe(
+      'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    );
+    expect(env.npm_config_ignore_scripts).toBe('true');
+    // La caché de npm sigue en el volumen compartido, no en /tmp.
+    expect(env.npm_config_cache).toBe('/pnpm-store/npm-cache');
+  });
+
   it('restartPolicy: Always (opuesto a los pods run-to-completion) — nunca activeDeadlineSeconds', () => {
     const pod = buildServicePodSpec(baseInput);
     expect(pod.spec?.restartPolicy).toBe('Always');
