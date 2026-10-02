@@ -5,6 +5,12 @@ import {
   buildServicePodSpec,
 } from './service-pod-spec.builder';
 
+// Construida en ejecución (nunca un literal con forma de credencial: GitGuardian).
+const demoPassword = (): string =>
+  Array.from({ length: 4 }, (_, i) => `${i}a${i}b${i}c${i}d`.repeat(2)).join(
+    '',
+  );
+
 describe('buildServicePodSpec', () => {
   const baseInput = {
     serviceId: 'svc-1',
@@ -70,6 +76,50 @@ describe('buildServicePodSpec', () => {
     expect(env.npm_config_ignore_scripts).toBe('true');
     // La caché de npm sigue en el volumen compartido, no en /tmp.
     expect(env.npm_config_cache).toBe('/pnpm-store/npm-cache');
+  });
+
+  it('db: sidecar nativo DESPUÉS del init de extracción, volumen, variables para la app y anotación del motor', () => {
+    const pod = buildServicePodSpec({
+      ...baseInput,
+      db: { engine: 'postgres', password: demoPassword() },
+    });
+
+    const inits = pod.spec?.initContainers ?? [];
+    expect(inits.map((c) => c.name)).toEqual(['extract-workspace', 'demo-db']);
+    expect(inits[1]?.restartPolicy).toBe('Always');
+    expect(pod.spec?.volumes?.some((v) => v.name === 'demo-db-data')).toBe(
+      true,
+    );
+    const appEnv = Object.fromEntries(
+      (pod.spec?.containers[0]?.env ?? []).map((e) => [e.name, e.value]),
+    );
+    expect(appEnv.DATABASE_URL).toContain('postgres://demo:');
+    expect(appEnv.DATABASE_URL).toContain('@127.0.0.1:5432/demo');
+    expect(pod.metadata?.annotations?.['jin.io/db-engine']).toBe('postgres');
+    // El contenedor de la app NO publica el puerto de la base.
+    expect(JSON.stringify(pod.spec?.containers[0]?.ports)).not.toContain(
+      '5432',
+    );
+  });
+
+  it('db sqlite: sin contenedor auxiliar, solo variables y anotación; sin db: nada de esto', () => {
+    const sqlite = buildServicePodSpec({
+      ...baseInput,
+      db: { engine: 'sqlite', password: '' },
+    });
+    expect((sqlite.spec?.initContainers ?? []).map((c) => c.name)).toEqual([
+      'extract-workspace',
+    ]);
+    expect(sqlite.metadata?.annotations?.['jin.io/db-engine']).toBe('sqlite');
+
+    const none = buildServicePodSpec(baseInput);
+    expect((none.spec?.initContainers ?? []).map((c) => c.name)).toEqual([
+      'extract-workspace',
+    ]);
+    expect(none.metadata?.annotations?.['jin.io/db-engine']).toBeUndefined();
+    expect(none.spec?.volumes?.some((v) => v.name === 'demo-db-data')).toBe(
+      false,
+    );
   });
 
   it('restartPolicy: Always (opuesto a los pods run-to-completion) — nunca activeDeadlineSeconds', () => {

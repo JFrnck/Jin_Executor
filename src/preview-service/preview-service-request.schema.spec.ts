@@ -74,3 +74,19 @@ describe('mailEgress y ExtendPreviewServiceRequestSchema', () => {
     expect(ok('3600')).toBe(false);
   });
 });
+
+describe('db', () => {
+  it('acepta solo los cuatro motores de demo; es opcional', () => {
+    const ok = (db: unknown) =>
+      StartPreviewServiceRequestSchema.safeParse(validRequest({ db })).success;
+    for (const engine of ['sqlite', 'redis', 'postgres', 'mongodb']) {
+      expect(ok(engine)).toBe(true);
+    }
+    expect(ok('mysql')).toBe(false);
+    expect(ok('POSTGRES')).toBe(false);
+    expect(ok({ engine: 'redis' })).toBe(false);
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(validRequest()).success,
+    ).toBe(true);
+  });
+});

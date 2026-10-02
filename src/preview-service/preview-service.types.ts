@@ -9,4 +9,6 @@ export interface PreviewServiceInfo {
   readonly expiresAt: string;
   /** Aprobación que lo originó; ausente en pods anteriores a este campo. */
   readonly requestId?: string;
+  /** Motor de base de datos de la demo (si pidió uno). */
+  readonly db?: string;
 }

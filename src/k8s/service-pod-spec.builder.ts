@@ -1,5 +1,7 @@
 import type { V1Pod, V1Service } from '@kubernetes/client-node';
+import { buildDemoDb, type DemoDbEngine } from './demo-db.builder';
 import {
+  DB_ENGINE_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   MAIL_EGRESS_LABEL,
@@ -40,6 +42,9 @@ export interface BuildServicePodSpecInput {
   readonly mailEgress?: boolean | undefined;
   /** URL del proxy de npm: con ella el pod instala dependencias (label + variables de npm). */
   readonly npmRegistryUrl?: string | undefined;
+  /** Base de datos de demo (contenedor auxiliar o archivo sqlite) con su contraseña aleatoria. */
+  readonly db?:
+    { readonly engine: DemoDbEngine; readonly password: string } | undefined;
 }
 
 /**
@@ -76,6 +81,9 @@ function npmEnv(registryUrl: string) {
 }
 
 export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
+  const demoDb = input.db
+    ? buildDemoDb(input.db.engine, input.db.password)
+    : undefined;
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -96,6 +104,7 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
         ...(input.requestId
           ? { [REQUEST_ID_ANNOTATION]: input.requestId }
           : {}),
+        ...(input.db ? { [DB_ENGINE_ANNOTATION]: input.db.engine } : {}),
       },
     },
     spec: {
@@ -118,6 +127,7 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           name: PNPM_STORE_VOLUME,
           persistentVolumeClaim: { claimName: PNPM_STORE_PVC_NAME },
         },
+        ...(demoDb?.volumes ?? []),
       ],
       initContainers: [
         {
@@ -152,6 +162,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
             limits: { cpu: '500m', memory: '512Mi' },
           },
         },
+        // Base de datos de demo como contenedor auxiliar NATIVO: va DESPUÉS de extraer el
+        // workspace y la app no arranca hasta que su startupProbe pasa.
+        ...(demoDb?.sidecar ? [demoDb.sidecar] : []),
       ],
       containers: [
         {
@@ -168,6 +181,7 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
               value: `${PNPM_STORE_MOUNT_PATH}/npm-cache`,
             },
             ...(input.npmRegistryUrl ? npmEnv(input.npmRegistryUrl) : []),
+            ...(demoDb?.appEnv ?? []),
           ],
           volumeMounts: [
             { name: WORKSPACE_VOLUME, mountPath: WORKSPACE_MOUNT_PATH },

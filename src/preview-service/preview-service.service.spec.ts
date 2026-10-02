@@ -186,6 +186,67 @@ describe('PreviewServiceLifecycleService.start', () => {
     expect(result.url).toMatch(/jinserver\.com$/);
   });
 
+  it('db: cada demo recibe su contraseña aleatoria (hex de 32), distinta entre demos, y el motor sale en la respuesta', async () => {
+    const { k8s, createPod } = fakeK8s();
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    const first = await service.start(baseRequest({ db: 'redis' }));
+    const second = await service.start(baseRequest({ db: 'redis' }));
+
+    const urlOf = (call: number): string => {
+      const pod = (createPod as Mock).mock.calls[call]?.[0] as V1Pod;
+      return (
+        pod.spec?.containers[0]?.env?.find((e) => e.name === 'REDIS_URL')
+          ?.value ?? ''
+      );
+    };
+    expect(urlOf(0)).toMatch(/^redis:\/\/:[a-f0-9]{32}@127\.0\.0\.1:6379$/);
+    expect(urlOf(0)).not.toBe(urlOf(1));
+    expect(first.db).toBe('redis');
+    expect(second.db).toBe('redis');
+  });
+
+  it('list() devuelve el motor de la demo desde la anotación del pod', async () => {
+    const pods: V1Pod[] = [
+      {
+        metadata: {
+          labels: { 'jin.io/service-id': 'a' },
+          annotations: {
+            'jin.io/expires-at': new Date(Date.now() + 60_000).toISOString(),
+            'jin.io/slug': 'x-abc123',
+            'jin.io/db-engine': 'mongodb',
+          },
+        },
+      },
+      {
+        metadata: {
+          labels: { 'jin.io/service-id': 'b' },
+          annotations: {
+            'jin.io/expires-at': new Date(Date.now() + 60_000).toISOString(),
+            'jin.io/slug': 'y-abc123',
+          },
+        },
+      },
+    ];
+    const { k8s } = fakeK8s({
+      listPodsByLabel: vi.fn().mockResolvedValue(pods),
+    });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    const result = await service.list();
+
+    expect(result.find((s) => s.id === 'a')?.db).toBe('mongodb');
+    expect(result.find((s) => s.id === 'b')?.db).toBeUndefined();
+  });
+
   it('sin npm: ni policy de salida, ni label, ni variables de npm (el pod no llega a ningún registro)', async () => {
     const { k8s, createPod, createNetworkPolicy } = fakeK8s();
     const service = new PreviewServiceLifecycleService(
