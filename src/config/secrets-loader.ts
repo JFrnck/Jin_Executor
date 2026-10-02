@@ -7,6 +7,15 @@ import { InfisicalSDK } from '@infisical/sdk';
 // en Infisical (menor privilegio, ver AGENTS.md §5.3).
 const REQUIRED_SECRET_KEYS = ['MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'] as const;
 
+// Opcionales (2026-10-02, demos en GitHub): si faltan, la función queda apagada y el
+// Executor arranca igual. Requerirlas dejaría el pod en CrashLoopBackOff por una función
+// que no es del núcleo (mismo criterio que el puente de Jin_Core, ADR 0012).
+const OPTIONAL_SECRET_KEYS = [
+  'GITHUB_APP_ID',
+  'GITHUB_APP_INSTALLATION_ID',
+  'GITHUB_APP_PRIVATE_KEY',
+] as const;
+
 function requireVar(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key];
   if (!value) {
@@ -58,5 +67,9 @@ export async function loadSecrets(
 
   for (const key of REQUIRED_SECRET_KEYS) {
     env[key] = byKey.get(key);
+  }
+  for (const key of OPTIONAL_SECRET_KEYS) {
+    const value = byKey.get(key);
+    if (value) env[key] = value;
   }
 }
