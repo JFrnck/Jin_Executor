@@ -38,3 +38,13 @@ export class PreviewServiceTtlCapError extends JinError {
     );
   }
 }
+
+/** La cuota de recursos de `agents-sandbox` no deja crear otro pod (CPU/memoria de otras demos o terminales). */
+export class PreviewServiceQuotaError extends JinError {
+  constructor(detail: string) {
+    super(
+      `El sandbox no tiene recursos libres para otra demo (${detail}). Espera a que termine una, o detén una demo o terminal que no uses.`,
+      { code: 'PREVIEW_SERVICE_QUOTA_EXCEEDED', httpStatus: 429 },
+    );
+  }
+}

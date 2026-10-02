@@ -129,11 +129,16 @@ const ENGINES: Record<Exclude<DemoDbEngine, 'sqlite'>, EngineSpec> = {
       '--wiredTigerCacheSizeGB',
       '0.25',
     ],
-    // Con credenciales: pasa cuando el usuario YA existe (no durante el arranque temporal).
+    // Listo SOLO cuando corre el servidor DEFINITIVO. La imagen arranca primero un mongod
+    // temporal (crea el usuario raíz) y luego lo reinicia con `--auth`; un sondeo que pasara
+    // en esa fase dejaba arrancar a la app y, unos segundos después, la base rechazaba la
+    // conexión (visto en producción 2026-10-02). Solo el definitivo lleva el argumento
+    // `--auth`: se busca en las líneas de comando de los procesos (la imagen no trae pgrep).
+    // El patrón `--aut[h]` no se reconoce a sí mismo: el propio grep también aparece en /proc.
     probe: [
       'sh',
       '-c',
-      `mongosh --quiet --host 127.0.0.1 -u ${DB_USER} -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval 'db.adminCommand("ping").ok'`,
+      `cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\\0' '\\n' | grep -qx -e '--aut[h]' && mongosh --quiet --host 127.0.0.1 -u ${DB_USER} -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval 'db.adminCommand("ping").ok'`,
     ],
     resources: {
       requests: { cpu: '75m', memory: '256Mi' },

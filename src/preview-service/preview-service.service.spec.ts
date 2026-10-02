@@ -7,6 +7,7 @@ import { RbacValidatorService } from '../rbac/rbac-validator.service';
 import {
   PreviewServiceLimitError,
   PreviewServiceNotFoundError,
+  PreviewServiceQuotaError,
   PreviewServiceTtlCapError,
 } from './errors';
 import { PreviewServiceLifecycleService } from './preview-service.service';
@@ -263,6 +264,57 @@ describe('PreviewServiceLifecycleService.start', () => {
     const names = (pod.spec?.containers[0]?.env ?? []).map((e) => e.name);
     expect(names).not.toContain('npm_config_registry');
     expect(names).not.toContain('npm_config_ignore_scripts');
+  });
+
+  it('cuota agotada: error claro 429 con los números, y NO deja nada huérfano (policies, service, pod)', async () => {
+    const quota = new Error(
+      'HTTP-Code: 403 Body: {"message":"pods \\"x\\" is forbidden: exceeded quota: agents-sandbox-quota, requested: limits.cpu=1500m, used: limits.cpu=2200m, limited: limits.cpu=3","reason":"Forbidden"}',
+    );
+    const {
+      k8s,
+      deletePod,
+      deleteNetworkPolicy,
+      deleteService,
+      deleteIngressRoute,
+    } = fakeK8s({
+      createPod: vi.fn().mockRejectedValue(quota),
+    });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    const error = await service
+      .start(baseRequest({ npm: true }))
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PreviewServiceQuotaError);
+    expect((error as PreviewServiceQuotaError).httpStatus).toBe(429);
+    expect((error as Error).message).toContain('limits.cpu=1500m');
+    expect((error as Error).message).toContain('limits.cpu=2200m');
+    // La policy de salida a npm que ya se había creado se borra.
+    expect(deleteNetworkPolicy).toHaveBeenCalledWith(
+      expect.stringMatching(/-egress$/),
+    );
+    expect(deletePod).toHaveBeenCalledTimes(1);
+    expect(deleteService).toHaveBeenCalledTimes(1);
+    expect(deleteIngressRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it('cualquier otro error al crear también limpia y se propaga TAL CUAL', async () => {
+    const boom = new Error('apiserver caído');
+    const { k8s, deletePod } = fakeK8s({
+      createService: vi.fn().mockRejectedValue(boom),
+    });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    await expect(service.start(baseRequest())).rejects.toBe(boom);
+    expect(deletePod).toHaveBeenCalledTimes(1);
   });
 
   it('acota ttlSeconds al cap duro configurado, nunca confía en el valor del request', async () => {
