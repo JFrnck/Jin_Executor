@@ -28,3 +28,13 @@ export class PreviewServiceExportError extends JinError {
     });
   }
 }
+
+/** Alargar un pod que ya está en el tope de vida (`PREVIEW_SERVICE_MAX_TTL_SECONDS` desde que se creó). */
+export class PreviewServiceTtlCapError extends JinError {
+  constructor(maxDays: number) {
+    super(
+      `Este servicio ya llegó al tope de ${maxDays} día(s) de vida desde que se creó: no se puede alargar más.`,
+      { code: 'PREVIEW_SERVICE_TTL_CAP', httpStatus: 409 },
+    );
+  }
+}

@@ -4,7 +4,11 @@ import type { V1Pod } from '@kubernetes/client-node';
 import type { K8sService } from '../k8s/k8s.service';
 import { ForbiddenToolError } from '../rbac/errors';
 import { RbacValidatorService } from '../rbac/rbac-validator.service';
-import { PreviewServiceLimitError } from './errors';
+import {
+  PreviewServiceLimitError,
+  PreviewServiceNotFoundError,
+  PreviewServiceTtlCapError,
+} from './errors';
 import { PreviewServiceLifecycleService } from './preview-service.service';
 
 // Cada método queda como const nombrada (no `k8s.metodo` en las
@@ -185,6 +189,114 @@ describe('PreviewServiceLifecycleService.stop', () => {
     expect(deleteService).toHaveBeenCalledWith('agent-service-svc-1');
     expect(deleteNetworkPolicy).toHaveBeenCalledWith('svc-1-ingress');
     expect(deletePod).toHaveBeenCalledWith('agent-service-svc-1');
+  });
+});
+
+describe('PreviewServiceLifecycleService.extend', () => {
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+
+  function podCreatedAgo(createdMsAgo: number, expiresInMs: number): V1Pod {
+    return {
+      metadata: {
+        name: 'agent-service-svc-1',
+        creationTimestamp: new Date(Date.now() - createdMsAgo),
+        labels: { 'jin.io/service-id': 'svc-1' },
+        annotations: {
+          'jin.io/expires-at': new Date(Date.now() + expiresInMs).toISOString(),
+          'jin.io/slug': 'demo-abc123',
+        },
+      },
+    };
+  }
+
+  function setup(pod: V1Pod, maxTtl = 7 * 86_400) {
+    const replacePodAnnotationStrict = vi.fn().mockResolvedValue(undefined);
+    const { k8s } = fakeK8s({
+      listPodsByLabel: vi.fn().mockResolvedValue([pod]),
+      replacePodAnnotationStrict,
+    });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig({ PREVIEW_SERVICE_MAX_TTL_SECONDS: maxTtl }),
+    );
+    return { service, replacePodAnnotationStrict };
+  }
+
+  it('suma al vencimiento actual y actualiza la annotation', async () => {
+    const { service, replacePodAnnotationStrict } = setup(
+      podCreatedAgo(2 * HOUR, 22 * HOUR),
+    );
+    const before = Date.now();
+
+    const result = await service.extend('svc-1', DAY / 1000);
+
+    const expected = before + 22 * HOUR + DAY;
+    expect(
+      Math.abs(new Date(result.expiresAt).getTime() - expected),
+    ).toBeLessThan(5_000);
+    expect(replacePodAnnotationStrict).toHaveBeenCalledWith(
+      'agent-service-svc-1',
+      'jin.io/expires-at',
+      result.expiresAt,
+    );
+  });
+
+  it('nunca pasa del tope desde la CREACIÓN del pod: recorta lo que sobra', async () => {
+    // Creado hace 6 días, vence en 12 h: el tope de 7 días deja solo 1 día desde la creación.
+    const { service } = setup(podCreatedAgo(6 * DAY, 12 * HOUR));
+    const created = Date.now() - 6 * DAY;
+
+    const result = await service.extend('svc-1', (3 * DAY) / 1000);
+
+    expect(
+      Math.abs(new Date(result.expiresAt).getTime() - (created + 7 * DAY)),
+    ).toBeLessThan(5_000);
+  });
+
+  it('en el tope no alarga y lo dice (409), sin tocar el pod', async () => {
+    const { service, replacePodAnnotationStrict } = setup(
+      podCreatedAgo(6 * DAY + 23 * HOUR, 1 * HOUR),
+    );
+
+    await expect(service.extend('svc-1', 3600)).rejects.toBeInstanceOf(
+      PreviewServiceTtlCapError,
+    );
+    expect(replacePodAnnotationStrict).not.toHaveBeenCalled();
+  });
+
+  it('un servicio vencido no se renueva (404, el reaper puede estar destruyéndolo)', async () => {
+    const { service, replacePodAnnotationStrict } = setup(
+      podCreatedAgo(2 * DAY, -1000),
+    );
+
+    await expect(service.extend('svc-1', 3600)).rejects.toBeInstanceOf(
+      PreviewServiceNotFoundError,
+    );
+    expect(replacePodAnnotationStrict).not.toHaveBeenCalled();
+  });
+
+  it('un id que no existe es 404', async () => {
+    const { service } = setup(podCreatedAgo(HOUR, HOUR));
+    await expect(service.extend('otro', 3600)).rejects.toBeInstanceOf(
+      PreviewServiceNotFoundError,
+    );
+  });
+
+  it('si el K8s falla al anotar, el error SALE (no se miente con un nuevo vencimiento)', async () => {
+    const pod = podCreatedAgo(HOUR, HOUR);
+    const { k8s } = fakeK8s({
+      listPodsByLabel: vi.fn().mockResolvedValue([pod]),
+      replacePodAnnotationStrict: vi.fn().mockRejectedValue(new Error('boom')),
+    });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    await expect(service.extend('svc-1', 3600)).rejects.toThrow('boom');
   });
 });
 

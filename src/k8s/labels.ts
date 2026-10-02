@@ -19,6 +19,14 @@ export const SERVICE_SLUG_ANNOTATION = 'jin.io/slug';
 /** Secret de TLS del wildcard `*.jinserver.com` en `agents-sandbox` (Certificate propio, ver ADR 0006 punto 8 — el de namespace `jin` no es visible acá). */
 export const JINSERVER_TLS_SECRET_NAME = 'wildcard-jinserver-com-tls';
 
+/**
+ * Pod de servicio que puede enviar correo (2026-10-02): lo pone el Executor SOLO
+ * si la aprobación pedía `mailEgress`. La NetworkPolicy del proxy `mail-egress`
+ * (Jin_Infra) solo acepta pods de servicio con este label.
+ */
+export const MAIL_EGRESS_LABEL = 'jin.io/mail-egress';
+export const MAIL_EGRESS_LABEL_VALUE = 'enabled';
+
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }

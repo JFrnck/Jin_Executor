@@ -2,6 +2,8 @@ import type { V1Pod, V1Service } from '@kubernetes/client-node';
 import {
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
+  MAIL_EGRESS_LABEL,
+  MAIL_EGRESS_LABEL_VALUE,
   SERVICE_ID_LABEL,
   SERVICE_SLUG_ANNOTATION,
   SERVICE_TYPE_LABEL,
@@ -32,6 +34,8 @@ export interface BuildServicePodSpecInput {
   readonly expiresAt: Date;
   /** Aprobación que lo originó (para enlazarlo con el audit). */
   readonly requestId?: string | undefined;
+  /** Puede salir al proxy de correo (`mail-egress`): pone el label que su NetworkPolicy exige. */
+  readonly mailEgress?: boolean | undefined;
 }
 
 /**
@@ -59,6 +63,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
       labels: {
         [SERVICE_ID_LABEL]: input.serviceId,
         [SERVICE_TYPE_LABEL]: SERVICE_TYPE_VALUE,
+        ...(input.mailEgress
+          ? { [MAIL_EGRESS_LABEL]: MAIL_EGRESS_LABEL_VALUE }
+          : {}),
       },
       annotations: {
         [SERVICE_EXPIRES_AT_ANNOTATION]: input.expiresAt.toISOString(),

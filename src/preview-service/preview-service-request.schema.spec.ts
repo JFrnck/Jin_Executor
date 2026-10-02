@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { StartPreviewServiceRequestSchema } from './preview-service-request.schema';
+import {
+  ExtendPreviewServiceRequestSchema,
+  StartPreviewServiceRequestSchema,
+} from './preview-service-request.schema';
 
 function validRequest(overrides: Record<string, unknown> = {}) {
   return {
@@ -39,5 +42,35 @@ describe('StartPreviewServiceRequestSchema', () => {
     const raw = validRequest() as Record<string, unknown>;
     delete raw.command;
     expect(StartPreviewServiceRequestSchema.safeParse(raw).success).toBe(false);
+  });
+});
+
+describe('mailEgress y ExtendPreviewServiceRequestSchema', () => {
+  it('mailEgress es opcional y debe ser booleano', () => {
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(validRequest()).success,
+    ).toBe(true);
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(
+        validRequest({ mailEgress: true }),
+      ).success,
+    ).toBe(true);
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(
+        validRequest({ mailEgress: 'si' }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('extend: segundos enteros positivos de hasta 7 días', () => {
+    const ok = (extraSeconds: unknown) =>
+      ExtendPreviewServiceRequestSchema.safeParse({ extraSeconds }).success;
+    expect(ok(3600)).toBe(true);
+    expect(ok(7 * 24 * 60 * 60)).toBe(true);
+    expect(ok(7 * 24 * 60 * 60 + 1)).toBe(false);
+    expect(ok(0)).toBe(false);
+    expect(ok(-5)).toBe(false);
+    expect(ok(1.5)).toBe(false);
+    expect(ok('3600')).toBe(false);
   });
 });
