@@ -102,3 +102,45 @@ describe('K8sService.deletePvcOrThrow', () => {
     expect(del).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('K8sService: borrados best-effort', () => {
+  function k8sWithLogger(rejection: unknown) {
+    const k8s = Object.create(K8sService.prototype) as K8sService;
+    const logger = { warn: vi.fn(), debug: vi.fn() };
+    Object.assign(k8s, {
+      coreApi: {
+        deleteNamespacedPod: vi.fn().mockRejectedValue(rejection),
+        deleteNamespacedService: vi.fn().mockRejectedValue(rejection),
+      },
+      networkingApi: {
+        deleteNamespacedNetworkPolicy: vi.fn().mockRejectedValue(rejection),
+      },
+      logger,
+    });
+    Object.defineProperty(k8s, 'namespace', { value: 'agents-sandbox' });
+    return { k8s, logger };
+  }
+
+  it('un 404 se registra en debug, sin warn ni cuerpo de la respuesta', async () => {
+    const { k8s, logger } = k8sWithLogger({ code: 404, body: 'x'.repeat(500) });
+
+    await k8s.deletePod('p1');
+    await k8s.deleteService('s1');
+    await k8s.deleteNetworkPolicy('n1');
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledTimes(3);
+    expect(String(logger.debug.mock.calls[0]?.[0])).toBe(
+      'deletePod(p1): ya no existía',
+    );
+  });
+
+  it('cualquier otro error SÍ es un warn (no se esconde)', async () => {
+    const { k8s, logger } = k8sWithLogger(new Error('forbidden'));
+
+    await k8s.deletePod('p1');
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(String(logger.warn.mock.calls[0]?.[0])).toContain('forbidden');
+  });
+});

@@ -203,9 +203,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deletePod(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deletePod', name, error);
     }
   }
 
@@ -239,6 +237,25 @@ export class K8sService {
       await sleep(POD_POLL_INTERVAL_MS);
     }
     throw new PodTimeoutError(name, timeoutMs);
+  }
+
+  /**
+   * Los borrados "best-effort" (nunca lanzan) llaman a esto: un 404 (ya no existía,
+   * lo normal al parar una terminal que nunca publicó un Service) va a nivel debug y
+   * SIN el cuerpo de la respuesta; cualquier otro error sigue siendo un warn. Antes
+   * todo era un warn con el cuerpo completo y escondía los errores reales entre
+   * cientos de líneas (CI de 2026-10-02).
+   */
+  private logDeleteFailure(
+    operation: string,
+    name: string,
+    error: unknown,
+  ): void {
+    if (this.isNotFound(error)) {
+      this.logger.debug(`${operation}(${name}): ya no existía`);
+      return;
+    }
+    this.logger.warn(`${operation}(${name}) falló: ${String(error)}`);
   }
 
   private isNotFound(error: unknown): boolean {
@@ -486,9 +503,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deletePvc(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deletePvc', name, error);
     }
   }
 
@@ -612,9 +627,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteNetworkPolicy(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteNetworkPolicy', name, error);
     }
   }
 
@@ -642,9 +655,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteService(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteService', name, error);
     }
   }
 
@@ -676,9 +687,7 @@ export class K8sService {
         name,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteIngressRoute(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteIngressRoute', name, error);
     }
   }
 }
