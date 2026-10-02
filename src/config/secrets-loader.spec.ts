@@ -125,4 +125,54 @@ describe('loadSecrets', () => {
 
     await expect(loadSecrets(baseEnv())).rejects.toThrow('MODAL_TOKEN_SECRET');
   });
+
+  describe('claves opcionales de la GitHub App (demos en GitHub)', () => {
+    // Valores de ejemplo construidos en ejecución (nada con forma de credencial en el repo).
+    const github = {
+      GITHUB_APP_ID: String(10 ** 6),
+      GITHUB_APP_INSTALLATION_ID: String(10 ** 7),
+      GITHUB_APP_PRIVATE_KEY: ['-----BEGIN', 'EJEMPLO-----'].join(' '),
+    };
+
+    it('si están en Infisical, se vuelcan a env junto con las de Modal', async () => {
+      loginMock.mockResolvedValue(undefined);
+      listSecretsMock.mockResolvedValue({
+        secrets: secretsFrom({ ...ALL_REAL_SECRETS, ...github }),
+      });
+      const env = baseEnv();
+
+      await loadSecrets(env);
+
+      expect(env['GITHUB_APP_ID']).toBe(github.GITHUB_APP_ID);
+      expect(env['GITHUB_APP_INSTALLATION_ID']).toBe(
+        github.GITHUB_APP_INSTALLATION_ID,
+      );
+      expect(env['GITHUB_APP_PRIVATE_KEY']).toBe(github.GITHUB_APP_PRIVATE_KEY);
+    });
+
+    it('si NO están, no lanza (la función queda apagada y el Executor arranca igual) ni deja las variables definidas', async () => {
+      loginMock.mockResolvedValue(undefined);
+      listSecretsMock.mockResolvedValue({
+        secrets: secretsFrom(ALL_REAL_SECRETS),
+      });
+      const env = baseEnv();
+
+      await expect(loadSecrets(env)).resolves.toBeUndefined();
+
+      expect('GITHUB_APP_ID' in env).toBe(false);
+      expect('GITHUB_APP_PRIVATE_KEY' in env).toBe(false);
+    });
+
+    it('un valor vacío en Infisical se trata como ausente', async () => {
+      loginMock.mockResolvedValue(undefined);
+      listSecretsMock.mockResolvedValue({
+        secrets: secretsFrom({ ...ALL_REAL_SECRETS, GITHUB_APP_ID: '' }),
+      });
+      const env = baseEnv();
+
+      await loadSecrets(env);
+
+      expect('GITHUB_APP_ID' in env).toBe(false);
+    });
+  });
 });
