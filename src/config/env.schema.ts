@@ -47,7 +47,10 @@ export const EnvSchema = z.object({
     .number()
     .int()
     .positive()
-    .max(24 * 60 * 60, 'El cap duro de PROMPTS.md §5.5 es 24h')
+    // 2026-10-02: de 24 h a 7 días (demos para clientes, decisión del owner).
+    // Alargar un pod pasa por `extend` (aprobación) y nunca supera este tope
+    // contado desde que se creó.
+    .max(7 * 24 * 60 * 60, 'El cap duro de un pod de servicio es 7 días')
     .default(24 * 60 * 60),
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
   // src/terminal (ADR 0016): sesiones de terminal del owner. La única salida

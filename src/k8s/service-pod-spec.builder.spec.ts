@@ -31,6 +31,22 @@ describe('buildServicePodSpec', () => {
     expect(pod.metadata?.annotations?.['jin.io/slug']).toBe('demo-a1b2c3');
   });
 
+  it('mailEgress: solo con la bandera el pod lleva el label que habilita su salida al proxy de correo', () => {
+    const without = buildServicePodSpec(baseInput);
+    expect(without.metadata?.labels?.['jin.io/mail-egress']).toBeUndefined();
+    expect(
+      buildServicePodSpec({ ...baseInput, mailEgress: false }).metadata
+        ?.labels?.['jin.io/mail-egress'],
+    ).toBeUndefined();
+
+    const withMail = buildServicePodSpec({ ...baseInput, mailEgress: true });
+    expect(withMail.metadata?.labels).toEqual({
+      'jin.io/service-id': 'svc-1',
+      'jin.io/type': 'service',
+      'jin.io/mail-egress': 'enabled',
+    });
+  });
+
   it('restartPolicy: Always (opuesto a los pods run-to-completion) — nunca activeDeadlineSeconds', () => {
     const pod = buildServicePodSpec(baseInput);
     expect(pod.spec?.restartPolicy).toBe('Always');

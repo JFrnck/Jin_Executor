@@ -26,6 +26,7 @@ import {
   PreviewServiceExportError,
   PreviewServiceLimitError,
   PreviewServiceNotFoundError,
+  PreviewServiceTtlCapError,
 } from './errors';
 import { collectExec } from '../k8s/pod-exec';
 import { EXPORT_FILES_SCRIPT } from '../terminal/terminal-scripts';
@@ -118,7 +119,7 @@ export class PreviewServiceLifecycleService {
     const slug = generateSlug(request.slugHint);
     // Nunca se confía en el ttlSeconds del request tal cual (mismo
     // criterio que `Math.min(request.timeout, tool.maxTimeoutSeconds)`
-    // en PodLifecycleService) — el cap duro de 24h se aplica acá, no
+    // en PodLifecycleService) — el cap duro (7 días) se aplica acá, no
     // solo se documenta.
     const ttlSeconds = Math.min(
       Math.max(request.ttlSeconds || this.defaultTtlSeconds, 1),
@@ -137,6 +138,7 @@ export class PreviewServiceLifecycleService {
       port: request.port,
       expiresAt,
       requestId: request.requestId,
+      mailEgress: request.mailEgress,
     });
     const networkPolicy = buildServiceIngressNetworkPolicy({
       serviceId,
@@ -167,6 +169,51 @@ export class PreviewServiceLifecycleService {
       status: 'running',
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  /**
+   * Alarga la vida de un servicio que sigue activo (2026-10-02): suma
+   * `extraSeconds` al vencimiento actual, sin pasar nunca de
+   * `PREVIEW_SERVICE_MAX_TTL_SECONDS` contado desde que el pod se creó. Un
+   * servicio vencido no se puede renovar (el reaper puede estar destruyéndolo).
+   */
+  async extend(
+    serviceId: string,
+    extraSeconds: number,
+  ): Promise<PreviewServiceInfo> {
+    const pods = await this.listActivePods();
+    const pod = pods.find(
+      (candidate) =>
+        candidate.metadata?.labels?.[SERVICE_ID_LABEL] === serviceId,
+    );
+    const podName = pod?.metadata?.name;
+    if (!pod || !podName) throw new PreviewServiceNotFoundError(serviceId);
+    const info = podToInfo(pod);
+    if (info.status !== 'running')
+      throw new PreviewServiceNotFoundError(serviceId);
+
+    const createdAt = pod.metadata?.creationTimestamp
+      ? new Date(pod.metadata.creationTimestamp).getTime()
+      : Date.now();
+    const hardLimit = createdAt + this.maxTtlSeconds * 1000;
+    const current = new Date(info.expiresAt).getTime();
+    const next = Math.min(current + extraSeconds * 1000, hardLimit);
+    if (next <= current) {
+      throw new PreviewServiceTtlCapError(
+        Math.round(this.maxTtlSeconds / 86_400),
+      );
+    }
+
+    const expiresAt = new Date(next).toISOString();
+    await this.k8s.replacePodAnnotationStrict(
+      podName,
+      SERVICE_EXPIRES_AT_ANNOTATION,
+      expiresAt,
+    );
+    this.logger.log(
+      `Servicio ${serviceId} (slug: ${info.slug}) alargado hasta ${expiresAt}`,
+    );
+    return { ...info, expiresAt };
   }
 
   /**

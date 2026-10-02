@@ -28,10 +28,26 @@ export const StartPreviewServiceRequestSchema = z.object({
     .positive()
     .max(7 * 24 * 60 * 60),
   slugHint: z.string().optional(),
+  // El pod puede enviar correo por el proxy `mail-egress` (solo api.brevo.com:443).
+  // Lo aprueba el owner con el resto del pedido; sin esto el pod no tiene salida.
+  mailEgress: z.boolean().optional(),
   // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
   requestId: z.string().uuid().optional(),
 });
 
 export type StartPreviewServiceRequest = z.infer<
   typeof StartPreviewServiceRequestSchema
+>;
+
+/** Contrato de POST /services/:id/extend: segundos a SUMAR al vencimiento actual. */
+export const ExtendPreviewServiceRequestSchema = z.object({
+  extraSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(7 * 24 * 60 * 60),
+});
+
+export type ExtendPreviewServiceRequest = z.infer<
+  typeof ExtendPreviewServiceRequestSchema
 >;

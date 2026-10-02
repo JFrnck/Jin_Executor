@@ -523,6 +523,25 @@ export class K8sService {
     }
   }
 
+  /**
+   * Como `patchPodAnnotation` pero LANZA si no se pudo: alargar la vida de un pod
+   * no puede fallar en silencio (el owner creería que la demo sigue y se borraría).
+   */
+  async replacePodAnnotationStrict(
+    name: string,
+    key: string,
+    value: string,
+  ): Promise<void> {
+    const escaped = key.replace(/~/g, '~0').replace(/\//g, '~1');
+    await this.coreApi.patchNamespacedPod({
+      name,
+      namespace: this.namespace,
+      body: [
+        { op: 'replace', path: `/metadata/annotations/${escaped}`, value },
+      ],
+    });
+  }
+
   async listServicesByLabel(labelSelector: string): Promise<V1Service[]> {
     const result = await this.coreApi.listNamespacedService({
       namespace: this.namespace,

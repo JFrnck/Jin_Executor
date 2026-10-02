@@ -12,7 +12,9 @@ import {
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import {
+  ExtendPreviewServiceRequestSchema,
   StartPreviewServiceRequestSchema,
+  type ExtendPreviewServiceRequest,
   type StartPreviewServiceRequest,
 } from './preview-service-request.schema';
 import type { PreviewServiceInfo } from './preview-service.types';
@@ -50,6 +52,23 @@ export class PreviewServiceController {
     @Body() body: StartPreviewServiceRequest,
   ): Promise<PreviewServiceInfo> {
     return this.previewService.start(body);
+  }
+
+  @Post(':id/extend')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Alarga la vida de un pod de servicio activo (hasta el tope de PREVIEW_SERVICE_MAX_TTL_SECONDS desde que se creó)',
+  })
+  @ApiResponse({ status: 200, description: 'Nuevo vencimiento' })
+  @ApiResponse({ status: 404, description: 'No existe o ya venció' })
+  @ApiResponse({ status: 409, description: 'Ya está en el tope de vida' })
+  async extend(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(ExtendPreviewServiceRequestSchema))
+    body: ExtendPreviewServiceRequest,
+  ): Promise<PreviewServiceInfo> {
+    return this.previewService.extend(id, body.extraSeconds);
   }
 
   @Delete(':id')
