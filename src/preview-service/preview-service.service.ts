@@ -8,7 +8,11 @@ import {
   buildService,
   buildServicePodSpec,
 } from '../k8s/service-pod-spec.builder';
-import { buildServiceIngressNetworkPolicy } from '../k8s/network-policy.builder';
+import {
+  buildServiceIngressNetworkPolicy,
+  buildServiceNpmEgressPolicy,
+  serviceEgressPolicyName,
+} from '../k8s/network-policy.builder';
 import {
   JINSERVER_TLS_SECRET_NAME,
   REQUEST_ID_ANNOTATION,
@@ -74,6 +78,9 @@ export class PreviewServiceLifecycleService {
   private readonly defaultTtlSeconds: number;
   private readonly maxTtlSeconds: number;
   private readonly maxConcurrentServices: number;
+  private readonly npmRegistryUrl: string;
+  private readonly registryNamespace: string;
+  private readonly registryPort: number;
 
   constructor(
     private readonly rbacValidator: RbacValidatorService,
@@ -98,6 +105,15 @@ export class PreviewServiceLifecycleService {
       'PREVIEW_SERVICE_MAX_CONCURRENT',
       3,
     );
+    this.npmRegistryUrl = configService.get<string>(
+      'PREVIEW_SERVICE_NPM_REGISTRY_URL',
+      'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    );
+    this.registryNamespace = configService.get<string>(
+      'PREVIEW_SERVICE_REGISTRY_NAMESPACE',
+      'registry-proxy',
+    );
+    this.registryPort = Number(new URL(this.npmRegistryUrl).port) || 4873;
   }
 
   async start(
@@ -139,6 +155,7 @@ export class PreviewServiceLifecycleService {
       expiresAt,
       requestId: request.requestId,
       mailEgress: request.mailEgress,
+      npmRegistryUrl: request.npm ? this.npmRegistryUrl : undefined,
     });
     const networkPolicy = buildServiceIngressNetworkPolicy({
       serviceId,
@@ -157,6 +174,17 @@ export class PreviewServiceLifecycleService {
     this.logger.log(
       `Levantando pod de servicio ${servicePodNameForId(serviceId)} (slug: ${slug}, TTL: ${ttlSeconds}s)`,
     );
+    // La salida a npm existe ANTES que el pod: `npm install` es lo primero que corre.
+    if (request.npm) {
+      await this.k8s.createNetworkPolicy(
+        buildServiceNpmEgressPolicy({
+          serviceId,
+          namespace,
+          registryNamespace: this.registryNamespace,
+          registryPort: this.registryPort,
+        }),
+      );
+    }
     await this.k8s.createPod(podSpec);
     await this.k8s.createNetworkPolicy(networkPolicy);
     await this.k8s.createService(service);
@@ -227,6 +255,7 @@ export class PreviewServiceLifecycleService {
     await this.k8s.deleteIngressRoute(podName);
     await this.k8s.deleteService(podName);
     await this.k8s.deleteNetworkPolicy(ingressNetworkPolicyName(serviceId));
+    await this.k8s.deleteNetworkPolicy(serviceEgressPolicyName(serviceId));
     await this.k8s.deletePod(podName);
   }
 

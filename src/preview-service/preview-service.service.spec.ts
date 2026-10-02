@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { V1Pod } from '@kubernetes/client-node';
 import type { K8sService } from '../k8s/k8s.service';
 import { ForbiddenToolError } from '../rbac/errors';
@@ -55,7 +55,10 @@ function fakeConfig(overrides: Record<string, unknown> = {}): ConfigService {
     PREVIEW_SERVICE_MAX_CONCURRENT: 3,
     ...overrides,
   };
-  return { get: (key: string) => values[key] } as unknown as ConfigService;
+  // Como el ConfigService real: sin valor configurado, devuelve el default del llamador.
+  return {
+    get: (key: string, fallback?: unknown) => values[key] ?? fallback,
+  } as unknown as ConfigService;
 }
 
 function baseRequest(overrides: Record<string, unknown> = {}) {
@@ -136,6 +139,71 @@ describe('PreviewServiceLifecycleService.start', () => {
     expect(result.status).toBe('running');
   });
 
+  it('npm: crea ANTES del pod la policy de salida SOLO a Verdaccio, y el pod lleva label y variables de npm', async () => {
+    const order: string[] = [];
+    const createPod = vi.fn((pod: V1Pod): Promise<unknown> => {
+      order.push(`pod:${JSON.stringify(pod.metadata?.labels)}`);
+      return Promise.resolve({});
+    });
+    const createNetworkPolicy = vi.fn(
+      (policy: { metadata?: { name?: string } }) => {
+        order.push(`policy:${policy.metadata?.name ?? ''}`);
+        return Promise.resolve(undefined);
+      },
+    );
+    const { k8s } = fakeK8s({ createPod, createNetworkPolicy });
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    const result = await service.start(baseRequest({ npm: true }));
+
+    expect(order[0]).toMatch(/^policy:.+-egress$/);
+    expect(order[1]).toContain('"jin.io/npm":"enabled"');
+    expect(order[2]).toMatch(/^policy:.+-ingress$/);
+
+    const egress = createNetworkPolicy.mock.calls[0]?.[0] as unknown as {
+      spec: { policyTypes: string[]; egress: { ports: { port: number }[] }[] };
+    };
+    expect(egress.spec.policyTypes).toEqual(['Egress']);
+    expect(egress.spec.egress).toHaveLength(1);
+    expect(egress.spec.egress[0]?.ports).toEqual([
+      { protocol: 'TCP', port: 4873 },
+    ]);
+
+    const env = (createPod.mock.calls[0]?.[0].spec?.containers[0]?.env ??
+      []) as {
+      name: string;
+      value?: string;
+    }[];
+    const get = (name: string) => env.find((e) => e.name === name)?.value;
+    expect(get('npm_config_registry')).toBe(
+      'http://verdaccio.registry-proxy.svc.cluster.local:4873',
+    );
+    expect(get('npm_config_ignore_scripts')).toBe('true');
+    expect(result.url).toMatch(/jinserver\.com$/);
+  });
+
+  it('sin npm: ni policy de salida, ni label, ni variables de npm (el pod no llega a ningún registro)', async () => {
+    const { k8s, createPod, createNetworkPolicy } = fakeK8s();
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    await service.start(baseRequest());
+
+    expect(createNetworkPolicy).toHaveBeenCalledTimes(1); // solo la de ingreso
+    const pod = (createPod as Mock).mock.calls[0]?.[0] as V1Pod;
+    expect(pod.metadata?.labels).not.toHaveProperty('jin.io/npm');
+    const names = (pod.spec?.containers[0]?.env ?? []).map((e) => e.name);
+    expect(names).not.toContain('npm_config_registry');
+    expect(names).not.toContain('npm_config_ignore_scripts');
+  });
+
   it('acota ttlSeconds al cap duro configurado, nunca confía en el valor del request', async () => {
     const { k8s } = fakeK8s();
     const service = new PreviewServiceLifecycleService(
@@ -188,6 +256,8 @@ describe('PreviewServiceLifecycleService.stop', () => {
     expect(deleteIngressRoute).toHaveBeenCalledWith('agent-service-svc-1');
     expect(deleteService).toHaveBeenCalledWith('agent-service-svc-1');
     expect(deleteNetworkPolicy).toHaveBeenCalledWith('svc-1-ingress');
+    // También la de salida a npm (no-throw: si el servicio no la tenía, no pasa nada).
+    expect(deleteNetworkPolicy).toHaveBeenCalledWith('svc-1-egress');
     expect(deletePod).toHaveBeenCalledWith('agent-service-svc-1');
   });
 });

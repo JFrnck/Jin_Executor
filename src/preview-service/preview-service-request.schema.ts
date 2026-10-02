@@ -31,6 +31,10 @@ export const StartPreviewServiceRequestSchema = z.object({
   // El pod puede enviar correo por el proxy `mail-egress` (solo api.brevo.com:443).
   // Lo aprueba el owner con el resto del pedido; sin esto el pod no tiene salida.
   mailEgress: z.boolean().optional(),
+  // El backend instala dependencias por el proxy de npm (Verdaccio): el pod recibe
+  // las variables de npm y una NetworkPolicy con SOLO esa salida. Los scripts de
+  // instalación (preinstall/postinstall) siguen desactivados.
+  npm: z.boolean().optional(),
   // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
   requestId: z.string().uuid().optional(),
 });
