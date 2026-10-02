@@ -203,9 +203,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deletePod(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deletePod', name, error);
     }
   }
 
@@ -239,6 +237,25 @@ export class K8sService {
       await sleep(POD_POLL_INTERVAL_MS);
     }
     throw new PodTimeoutError(name, timeoutMs);
+  }
+
+  /**
+   * Los borrados "best-effort" (nunca lanzan) llaman a esto: un 404 (ya no existía,
+   * lo normal al parar una terminal que nunca publicó un Service) va a nivel debug y
+   * SIN el cuerpo de la respuesta; cualquier otro error sigue siendo un warn. Antes
+   * todo era un warn con el cuerpo completo y escondía los errores reales entre
+   * cientos de líneas (CI de 2026-10-02).
+   */
+  private logDeleteFailure(
+    operation: string,
+    name: string,
+    error: unknown,
+  ): void {
+    if (this.isNotFound(error)) {
+      this.logger.debug(`${operation}(${name}): ya no existía`);
+      return;
+    }
+    this.logger.warn(`${operation}(${name}) falló: ${String(error)}`);
   }
 
   private isNotFound(error: unknown): boolean {
@@ -486,10 +503,55 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deletePvc(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deletePvc', name, error);
     }
+  }
+
+  /**
+   * Borra el disco de un proyecto y COMPRUEBA que se fue: tras pedir el borrado,
+   * lee el PVC y exige que ya no exista (404) o que esté terminando
+   * (`deletionTimestamp`, a la espera de que el pod suelte su finalizer). Si sigue
+   * vivo o el API falla, reintenta; si no lo logra, LANZA con el motivo. Un
+   * proyecto "eliminado" cuyo disco sigue ahí sin avisar es peor que un error
+   * visible (el borrado anterior tragaba cualquier error del API server).
+   */
+  async deletePvcOrThrow(name: string, attempts = 4): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await this.coreApi.deleteNamespacedPersistentVolumeClaim({
+          name,
+          namespace: this.namespace,
+        });
+      } catch (error) {
+        if (!this.isNotFound(error)) {
+          lastError = error;
+          this.logger.warn(
+            `deletePvc(${name}) intento ${attempt}/${attempts} falló: ${String(error)}`,
+          );
+          if (attempt < attempts) await sleep(500 * attempt);
+          continue;
+        }
+      }
+      // Postcondición: el PVC ya no está, o está terminando.
+      try {
+        const pvc = await this.readPvc(name);
+        if (pvc.metadata?.deletionTimestamp) return;
+        lastError = new Error(
+          `el disco ${name} sigue vivo tras pedir su borrado (sin deletionTimestamp)`,
+        );
+        this.logger.warn(
+          `deletePvc(${name}) intento ${attempt}/${attempts}: ${String(lastError)}`,
+        );
+      } catch (error) {
+        if (this.isNotFound(error)) return;
+        lastError = error;
+      }
+      if (attempt < attempts) await sleep(500 * attempt);
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`No se pudo borrar el disco ${name}: ${String(lastError)}`);
   }
 
   /**
@@ -565,9 +627,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteNetworkPolicy(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteNetworkPolicy', name, error);
     }
   }
 
@@ -595,9 +655,7 @@ export class K8sService {
         namespace: this.namespace,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteService(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteService', name, error);
     }
   }
 
@@ -629,9 +687,7 @@ export class K8sService {
         name,
       });
     } catch (error) {
-      this.logger.warn(
-        `deleteIngressRoute(${name}) falló (probablemente ya no existía): ${String(error)}`,
-      );
+      this.logDeleteFailure('deleteIngressRoute', name, error);
     }
   }
 }

@@ -28,4 +28,9 @@ async function bootstrap() {
   const configService = app.get<AppConfigService>(ConfigService);
   await app.listen(configService.get<number>('PORT'));
 }
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  // Antes era una promesa suelta: el mismo efecto (el proceso termina con error),
+  // pero ahora el motivo sale con un mensaje claro y el código de salida es explícito.
+  console.error('El Executor no pudo arrancar:', error);
+  process.exit(1);
+});

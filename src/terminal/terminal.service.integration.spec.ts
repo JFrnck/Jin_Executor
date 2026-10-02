@@ -215,7 +215,25 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
       // Elimina TODO (pod + disco): este proyecto no se retoma en otro test.
       await terminal.deleteWorkspace(id);
     }
-    expect((await terminal.list()).find((w) => w.id === id)).toBeUndefined();
+    const leftover = (await terminal.list()).find((w) => w.id === id);
+    if (leftover) {
+      // Diagnóstico para el CI (fallo intermitente 2026-10-02): el estado REAL del disco.
+      const pvcs = await testK3s.coreApi.listNamespacedPersistentVolumeClaim({
+        namespace: AGENTS_SANDBOX_NAMESPACE,
+      });
+      const mine = pvcs.items
+        .filter((pvc) => pvc.metadata?.labels?.['jin.io/service-id'] === id)
+        .map((pvc) => ({
+          name: pvc.metadata?.name,
+          phase: pvc.status?.phase,
+          deletionTimestamp: pvc.metadata?.deletionTimestamp,
+          finalizers: pvc.metadata?.finalizers,
+          created: pvc.metadata?.creationTimestamp,
+        }));
+      throw new Error(
+        `El workspace ${id} sigue listado tras deleteWorkspace. PVC: ${JSON.stringify(mine)}`,
+      );
+    }
     const services = await testK3s.coreApi.listNamespacedService({
       namespace: AGENTS_SANDBOX_NAMESPACE,
     });
@@ -465,16 +483,28 @@ describe('TerminalWorkspaceService (integración, K3s real)', () => {
         }
       };
 
+      // El tamaño del TTY lo aplica Kubernetes un instante DESPUÉS de arrancar el
+      // shell: un `stty size` escrito demasiado pronto (CI lento) sale con el tamaño
+      // viejo y nunca más. Se vuelve a preguntar hasta ver el esperado.
+      const waitForSize = async (rows: number, cols: number): Promise<void> => {
+        const needle = `${rows} ${cols}`;
+        const deadline = Date.now() + 30_000;
+        while (!out.includes(needle)) {
+          if (Date.now() > deadline)
+            throw new Error(`No apareció "${needle}". Salida:\n${out}`);
+          type('stty size\r');
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      };
+
       // Un TTY de verdad, con el tamaño pedido.
-      type('test -t 0 && echo TTY_OK; stty size\r');
+      type('test -t 0 && echo TTY_OK\r');
       await waitFor('TTY_OK');
-      await waitFor('30 100');
+      await waitForSize(30, 100);
 
       // El resize llega al pod.
       pty.resize(id, ptyId, { cols: 120, rows: 40 });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      type('stty size\r');
-      await waitFor('40 120');
+      await waitForSize(40, 120);
 
       // Un prompt que espera lo que se teclea (lo que no podía la terminal por comandos).
       type('read -p "nombre: " N; echo hola-$N\r');
