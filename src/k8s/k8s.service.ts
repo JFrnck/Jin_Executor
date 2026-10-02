@@ -493,6 +493,36 @@ export class K8sService {
   }
 
   /**
+   * Borra el disco de un proyecto y SE ASEGURA: ignora un 404 (ya no estaba) y
+   * reintenta los errores pasajeros; si no lo logra, LANZA. Un proyecto "eliminado"
+   * cuyo disco sigue ahí (sin avisar) es peor que un error visible — además de ser
+   * la causa de un test de integración intermitente (2026-10-02: `deletePvc`
+   * tragaba un error del API server y el workspace seguía listado).
+   */
+  async deletePvcOrThrow(name: string, attempts = 4): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await this.coreApi.deleteNamespacedPersistentVolumeClaim({
+          name,
+          namespace: this.namespace,
+        });
+        return;
+      } catch (error) {
+        if (this.isNotFound(error)) return;
+        lastError = error;
+        this.logger.warn(
+          `deletePvc(${name}) intento ${attempt}/${attempts} falló: ${String(error)}`,
+        );
+        if (attempt < attempts) await sleep(500 * attempt);
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`No se pudo borrar el disco ${name}: ${String(lastError)}`);
+  }
+
+  /**
    * Cambia UNA annotation de un pod vivo (JSON Patch, RFC 6902 — el cliente
    * elige ese formato solo, es el primero que ofrece). Se usa para anotar
    * "última actividad" sin tocar el resto del objeto. Requiere que la

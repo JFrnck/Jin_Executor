@@ -412,7 +412,7 @@ export class TerminalWorkspaceService {
   async deleteWorkspace(workspaceId: string): Promise<void> {
     this.rbacValidator.validate('deleteTerminalWorkspace');
     await this.stopPod(workspaceId);
-    await this.k8s.deletePvc(terminalWorkspacePvcNameForId(workspaceId));
+    await this.k8s.deletePvcOrThrow(terminalWorkspacePvcNameForId(workspaceId));
   }
 
   // ── Comandos ───────────────────────────────────────────────────────────

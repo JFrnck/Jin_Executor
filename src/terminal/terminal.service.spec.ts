@@ -101,6 +101,7 @@ function fakeK8s(
     deleteNetworkPolicy: log('deleteNetworkPolicy'),
     deletePod: log('deletePod'),
     deletePvc: log('deletePvc'),
+    deletePvcOrThrow: log('deletePvcOrThrow'),
     patchPodAnnotation: vi
       .fn()
       .mockImplementation((name: string, key: string, value: string) => {
@@ -878,8 +879,17 @@ describe('TerminalWorkspaceService.stopPod / deleteWorkspace', () => {
       'deleteNetworkPolicy',
       'deleteNetworkPolicy',
       'deletePod',
-      'deletePvc',
+      'deletePvcOrThrow',
     ]);
+  });
+
+  it('si el disco NO se pudo borrar, deleteWorkspace falla (no devuelve "eliminado" con el disco todavía ahí)', async () => {
+    const { k8s, mocks } = fakeK8s({ pods: [pod('t1')], pvcs: [pvc('t1')] });
+    mocks.deletePvcOrThrow.mockRejectedValueOnce(new Error('API caída'));
+
+    await expect(service(k8s).deleteWorkspace('t1')).rejects.toThrow(
+      'API caída',
+    );
   });
 });
 
