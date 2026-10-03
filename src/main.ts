@@ -1,8 +1,10 @@
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import type { AppConfigService } from './config';
 import { JinErrorFilter } from './common/filters/jin-error.filter';
+import { configureBodyParsers } from './common/body-parsers';
 import { loadSecrets } from './config/secrets-loader';
 
 async function bootstrap() {
@@ -15,7 +17,11 @@ async function bootstrap() {
   await loadSecrets();
   const { AppModule } = await import('./app.module.js');
 
-  const app = await NestFactory.create(AppModule);
+  // El body parser por defecto de Express corta en 100 KB; "Publicar" admite hasta 256 KB.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
+  configureBodyParsers(app);
   app.useGlobalFilters(new JinErrorFilter());
 
   const config = new DocumentBuilder()
