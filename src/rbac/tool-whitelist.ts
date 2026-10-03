@@ -123,6 +123,22 @@ const EXECUTOR_TOOL_REGISTRY: readonly ExecutorToolDefinition[] = Object.freeze(
       egressWhitelist: Object.freeze([]),
       isServiceTool: true,
     }),
+    // Demos en GitHub (2026-10-02, ADR 0019): las ejecuta el propio Executor con `git`
+    // (no un pod), así que no hay egreso de pod que declarar.
+    Object.freeze({
+      name: 'saveDemoToGithub',
+      description:
+        'Guarda una demo (pod de servicio) en una rama huérfana demo/<slug> del repo compartido de demos.',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
+    Object.freeze({
+      name: 'listGithubDemos',
+      description:
+        'Lista las ramas demo/* guardadas en el repo de demos. Solo lectura.',
+      egressWhitelist: Object.freeze([]),
+      isServiceTool: true,
+    }),
   ] satisfies ExecutorToolDefinition[],
 );
 

@@ -104,6 +104,17 @@ export const EnvSchema = z.object({
     .int()
     .positive()
     .default(30 * 60),
+  // Demos en GitHub (2026-10-02, ADR 0019). Las TRES claves de la App van en Infisical
+  // (secrets-loader.ts) y son opcionales: sin ellas la función queda apagada y el Executor
+  // arranca igual. Aquí solo lo que NO es secreto.
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_INSTALLATION_ID: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  // Repo compartido de demos (owner/repo) y otros repos a los que se puede graduar una demo.
+  GITHUB_DEMOS_REPO: z.string().optional(),
+  GITHUB_ALLOWED_REPOS: z.string().optional(),
+  GITHUB_API_BASE_URL: z.string().url().default('https://api.github.com'),
+  GITHUB_REMOTE_BASE_URL: z.string().url().default('https://github.com'),
   // src/config/secrets-loader.ts (Fase 8.1, BLUEPRINT §11): ver el
   // comentario equivalente en Jin_Core/src/config/env.schema.ts --
   // ninguna de estas 4 es un secreto, y las credenciales de la identidad

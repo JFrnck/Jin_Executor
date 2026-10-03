@@ -21,7 +21,9 @@ RUN pnpm prune --prod
 # runtime: sin toolchain de compilación, usuario no-root, dumb-init como
 # PID 1 (Nest deja child processes huérfanos sin él).
 FROM node:24.11.0-alpine AS runtime
-RUN apk add --no-cache dumb-init
+# git: demos guardadas en GitHub (ADR 0019). Lo corre el propio Executor como proceso
+# hijo (el token de la GitHub App nunca entra a un pod de demo).
+RUN apk add --no-cache dumb-init git
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder --chown=node:node /app/dist ./dist

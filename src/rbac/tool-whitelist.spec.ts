@@ -9,7 +9,7 @@ import {
 describe('tool-whitelist', () => {
   it('lista runCode con egressWhitelist vacío y maxTimeoutSeconds=300 (BLUEPRINT 4.4)', () => {
     const tools = listExecutorTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(11);
     const runCode = tools.find((t) => t.name === 'runCode');
     expect(runCode?.egressWhitelist).toEqual([]);
     if (!runCode || !isRunToCompletionTool(runCode)) {
@@ -52,6 +52,14 @@ describe('tool-whitelist', () => {
       const tool = getExecutorToolDefinition(name);
       expect(tool?.isServiceTool).toBe(true);
       expect(tool && isRunToCompletionTool(tool)).toBe(false);
+    }
+  });
+
+  it('las 2 tools de demos en GitHub (ADR 0019) son de servicio y sin egreso de pod (las corre el propio Executor)', () => {
+    for (const name of ['saveDemoToGithub', 'listGithubDemos']) {
+      const tool = getExecutorToolDefinition(name);
+      expect(tool?.isServiceTool).toBe(true);
+      expect(tool?.egressWhitelist).toEqual([]);
     }
   });
 
