@@ -350,4 +350,64 @@ describe('Demos con base de datos (integración, K3s real)', () => {
       await service.stop(missing.id);
     }
   }, 480_000);
+
+  it('variables por demo: el pod las recibe, el Secret queda ligado al pod y DESAPARECE SOLO cuando el pod se borra', async () => {
+    // Valores de ejemplo construidos en ejecución (nada con forma de credencial en el repo).
+    const fakeValue = `z${'1234567890'.repeat(3)}`;
+    const info = await service.start({
+      tool: 'startPreviewService',
+      files: { 'index.js': 'setInterval(() => {}, 1e6);' },
+      command: ['node', 'index.js'],
+      port: 3000,
+      ttlSeconds: 900,
+      env: { MI_CLAVE: fakeValue, OTRA_VARIABLE: 'hola' },
+    });
+    const podName = `agent-service-${info.id}`;
+    const secretName = `demo-env-${info.id}`;
+    try {
+      expect(info.envNames).toEqual(['MI_CLAVE', 'OTRA_VARIABLE']);
+      await k8s.waitForPodRunning(podName, 240_000);
+
+      // 1) El contenedor ve las variables; el pod spec NO lleva el valor.
+      const seen = await collectExec(k8s, podName, 'app', [
+        'node',
+        '-e',
+        'console.log("LEN=" + (process.env.MI_CLAVE ?? "").length + " OTRA=" + process.env.OTRA_VARIABLE)',
+      ]);
+      expect(seen.stdout).toContain(`LEN=${fakeValue.length} OTRA=hola`);
+      const pod = await k8s.readPod(podName);
+      expect(JSON.stringify(pod.spec)).not.toContain(fakeValue);
+      expect(pod.metadata?.annotations?.['jin.io/env-names']).toBe(
+        'MI_CLAVE,OTRA_VARIABLE',
+      );
+
+      // 2) El Secret existe y está ligado al pod (ownerReference con SU uid).
+      const secret = await testK3s.coreApi.readNamespacedSecret({
+        name: secretName,
+        namespace: AGENTS_SANDBOX_NAMESPACE,
+      });
+      expect(secret.metadata?.ownerReferences?.[0]).toMatchObject({
+        kind: 'Pod',
+        name: podName,
+        uid: pod.metadata?.uid,
+      });
+
+      // 3) Se borra SOLO el pod (sin pasar por stop()): Kubernetes borra el Secret.
+      await k8s.deletePod(podName);
+      let gone = false;
+      for (let i = 0; i < 60 && !gone; i++) {
+        gone = await testK3s.coreApi
+          .readNamespacedSecret({
+            name: secretName,
+            namespace: AGENTS_SANDBOX_NAMESPACE,
+          })
+          .then(() => false)
+          .catch(() => true);
+        if (!gone) await new Promise((r) => setTimeout(r, 2000));
+      }
+      expect(gone).toBe(true);
+    } finally {
+      await service.stop(info.id);
+    }
+  }, 480_000);
 });
