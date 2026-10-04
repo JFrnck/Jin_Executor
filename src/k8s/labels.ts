@@ -39,6 +39,13 @@ export const NPM_LABEL_VALUE = 'enabled';
 /** Motor de base de datos de una demo (redis|postgres|mongodb|sqlite); ausente si no pidió. */
 export const DB_ENGINE_ANNOTATION = 'jin.io/db-engine';
 
+/**
+ * Nombres de los secretos de demo que recibió el pod (solo nombres, nunca valores).
+ * Cada uno es un Secret `demo-secret-<nombre>` en agents-sandbox, creado por el owner.
+ */
+export const SECRETS_ANNOTATION = 'jin.io/secrets';
+export const DEMO_SECRET_PREFIX = 'demo-secret-';
+
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }

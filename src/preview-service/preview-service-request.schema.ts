@@ -41,6 +41,14 @@ export const StartPreviewServiceRequestSchema = z.object({
   // pod, solo en 127.0.0.1, con una contraseña aleatoria por demo y datos que viven
   // lo que viva el pod. La app recibe DATABASE_URL / REDIS_URL / MONGODB_URI.
   db: z.enum(DEMO_DB_ENGINES).optional(),
+  // Secretos de demo que el pod recibe como variables de entorno (p. ej. "brevo": la clave
+  // del correo). Cada nombre es un Secret `demo-secret-<nombre>` en agents-sandbox que crea el
+  // owner; el Executor NO lo lee (no tiene permiso): solo lo referencia en el pod. Solo los
+  // nombres habilitados en `PREVIEW_SERVICE_ALLOWED_CREDENTIALS`.
+  secrets: z
+    .array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,38}$/))
+    .max(5)
+    .optional(),
   // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
   requestId: z.string().uuid().optional(),
 });

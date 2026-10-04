@@ -133,6 +133,7 @@ describe('Demos con base de datos (integración, K3s real)', () => {
       // Cada test para su demo, pero el pod tarda en irse (terminando sigue contando): este
       // archivo no prueba el límite de concurrencia, así que se deja holgado.
       PREVIEW_SERVICE_MAX_CONCURRENT: 10,
+      PREVIEW_SERVICE_ALLOWED_CREDENTIALS: 'brevo,faltante',
     });
     k8s = new K8sService(configService);
     service = new PreviewServiceLifecycleService(
@@ -285,4 +286,68 @@ describe('Demos con base de datos (integración, K3s real)', () => {
       await service.stop(info.id);
     }
   }, 240_000);
+
+  it('secretos de demo: el pod recibe el Secret como variables de entorno (valor resuelto por K8s, no por el Executor); si el Secret no existe, falla ruidosamente', async () => {
+    // Valores de ejemplo construidos en ejecución (nada con forma de credencial en el repo).
+    const fakeKey = `k${'0123456789'.repeat(3)}`;
+    await testK3s.coreApi.createNamespacedSecret({
+      namespace: AGENTS_SANDBOX_NAMESPACE,
+      body: {
+        metadata: { name: 'demo-secret-brevo' },
+        stringData: { BREVO_API_KEY: fakeKey, BREVO_SENDER_NAME: 'evento' },
+      },
+    });
+
+    const withSecret = await service.start({
+      tool: 'startPreviewService',
+      files: { 'index.js': 'setInterval(() => {}, 1e6);' },
+      command: ['node', 'index.js'],
+      port: 3000,
+      ttlSeconds: 900,
+      secrets: ['brevo'],
+    });
+    const okPod = `agent-service-${withSecret.id}`;
+    try {
+      await k8s.waitForPodRunning(okPod, 240_000);
+      const env = await collectExec(k8s, okPod, 'app', [
+        'node',
+        '-e',
+        'console.log("LEN=" + (process.env.BREVO_API_KEY ?? "").length + " NAME=" + process.env.BREVO_SENDER_NAME)',
+      ]);
+      expect(env.stdout).toContain(`LEN=${fakeKey.length} NAME=evento`);
+      // El valor NO está en el pod spec: solo la referencia al Secret.
+      const spec = JSON.stringify((await k8s.readPod(okPod)).spec);
+      expect(spec).not.toContain(fakeKey);
+      expect(spec).toContain('demo-secret-brevo');
+    } finally {
+      await service.stop(withSecret.id);
+    }
+
+    const missing = await service.start({
+      tool: 'startPreviewService',
+      files: { 'index.js': 'setInterval(() => {}, 1e6);' },
+      command: ['node', 'index.js'],
+      port: 3000,
+      ttlSeconds: 900,
+      secrets: ['faltante'],
+    });
+    const missingPod = `agent-service-${missing.id}`;
+    try {
+      let reason = '';
+      for (let i = 0; i < 60 && reason === ''; i++) {
+        const pod = await k8s.readPod(missingPod);
+        const waiting = [
+          ...(pod.status?.containerStatuses ?? []),
+          ...(pod.status?.initContainerStatuses ?? []),
+        ].find(
+          (c) => c.state?.waiting?.reason === 'CreateContainerConfigError',
+        );
+        reason = waiting ? 'CreateContainerConfigError' : '';
+        if (reason === '') await new Promise((r) => setTimeout(r, 2000));
+      }
+      expect(reason).toBe('CreateContainerConfigError');
+    } finally {
+      await service.stop(missing.id);
+    }
+  }, 480_000);
 });

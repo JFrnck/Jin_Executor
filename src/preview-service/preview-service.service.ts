@@ -32,6 +32,7 @@ import {
   PreviewServiceLimitError,
   PreviewServiceNotFoundError,
   PreviewServiceQuotaError,
+  PreviewServiceSecretNotAllowedError,
   PreviewServiceTtlCapError,
 } from './errors';
 import { collectExec } from '../k8s/pod-exec';
@@ -96,6 +97,7 @@ export class PreviewServiceLifecycleService {
   private readonly npmRegistryUrl: string;
   private readonly registryNamespace: string;
   private readonly registryPort: number;
+  private readonly allowedSecrets: readonly string[];
 
   constructor(
     private readonly rbacValidator: RbacValidatorService,
@@ -129,6 +131,11 @@ export class PreviewServiceLifecycleService {
       'registry-proxy',
     );
     this.registryPort = Number(new URL(this.npmRegistryUrl).port) || 4873;
+    this.allowedSecrets = configService
+      .get<string>('PREVIEW_SERVICE_ALLOWED_CREDENTIALS', '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
   }
 
   async start(
@@ -139,6 +146,16 @@ export class PreviewServiceLifecycleService {
     // run-to-completion nunca debería llegar acá.
     if (isRunToCompletionTool(tool)) {
       throw new ForbiddenToolError(tool.name);
+    }
+
+    // Antes de crear NADA: un secreto no habilitado se rechaza sin tocar el clúster.
+    for (const name of request.secrets ?? []) {
+      if (!this.allowedSecrets.includes(name)) {
+        throw new PreviewServiceSecretNotAllowedError(
+          name,
+          this.allowedSecrets,
+        );
+      }
     }
 
     const activePods = await this.listActivePods();
@@ -170,6 +187,7 @@ export class PreviewServiceLifecycleService {
       expiresAt,
       requestId: request.requestId,
       mailEgress: request.mailEgress,
+      secrets: request.secrets,
       npmRegistryUrl: request.npm ? this.npmRegistryUrl : undefined,
       // Contraseña aleatoria POR DEMO (no es un secreto real: solo evita que otra demo del
       // clúster entre; la base solo escucha en 127.0.0.1 del propio pod).

@@ -2,6 +2,8 @@ import type { V1Pod, V1Service } from '@kubernetes/client-node';
 import { buildDemoDb, type DemoDbEngine } from './demo-db.builder';
 import {
   DB_ENGINE_ANNOTATION,
+  DEMO_SECRET_PREFIX,
+  SECRETS_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
   MAIL_EGRESS_LABEL,
@@ -42,6 +44,8 @@ export interface BuildServicePodSpecInput {
   readonly mailEgress?: boolean | undefined;
   /** URL del proxy de npm: con ella el pod instala dependencias (label + variables de npm). */
   readonly npmRegistryUrl?: string | undefined;
+  /** Nombres de secretos de demo (Secret `demo-secret-<n>`): se inyectan como variables de entorno. */
+  readonly secrets?: readonly string[] | undefined;
   /** Base de datos de demo (contenedor auxiliar o archivo sqlite) con su contraseña aleatoria. */
   readonly db?:
     { readonly engine: DemoDbEngine; readonly password: string } | undefined;
@@ -105,6 +109,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           ? { [REQUEST_ID_ANNOTATION]: input.requestId }
           : {}),
         ...(input.db ? { [DB_ENGINE_ANNOTATION]: input.db.engine } : {}),
+        ...(input.secrets?.length
+          ? { [SECRETS_ANNOTATION]: input.secrets.join(',') }
+          : {}),
       },
     },
     spec: {
@@ -173,6 +180,19 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           command: [...input.command],
           workingDir: WORKSPACE_MOUNT_PATH,
           ports: [{ containerPort: input.port }],
+          // El valor NUNCA pasa por el Executor: K8s resuelve el Secret al arrancar el contenedor.
+          // `optional: false`: si el Secret no existe el pod falla ruidosamente
+          // (CreateContainerConfigError) en vez de arrancar sin la clave.
+          ...(input.secrets?.length
+            ? {
+                envFrom: input.secrets.map((name) => ({
+                  secretRef: {
+                    name: `${DEMO_SECRET_PREFIX}${name}`,
+                    optional: false,
+                  },
+                })),
+              }
+            : {}),
           env: [
             { name: 'PORT', value: String(input.port) },
             { name: 'PNPM_HOME', value: PNPM_STORE_MOUNT_PATH },

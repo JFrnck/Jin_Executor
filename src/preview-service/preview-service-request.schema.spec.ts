@@ -90,3 +90,30 @@ describe('db', () => {
     ).toBe(true);
   });
 });
+
+describe('secrets', () => {
+  it('lista de nombres válidos (minúsculas, números, guiones), hasta 5; es opcional', () => {
+    const ok = (secrets: unknown) =>
+      StartPreviewServiceRequestSchema.safeParse(validRequest({ secrets }))
+        .success;
+    expect(ok(['brevo'])).toBe(true);
+    expect(ok(['a', 'b-2', 'c3', 'd', 'e'])).toBe(true);
+    expect(ok(['a', 'b', 'c', 'd', 'e', 'f'])).toBe(false);
+    for (const bad of [
+      'Brevo',
+      '../x',
+      'a b',
+      '',
+      '-x',
+      'a/b',
+      'x'.repeat(40),
+      5,
+    ]) {
+      expect(ok([bad])).toBe(false);
+    }
+    expect(ok('brevo')).toBe(false);
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(validRequest()).success,
+    ).toBe(true);
+  });
+});

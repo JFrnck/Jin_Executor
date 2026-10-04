@@ -8,6 +8,7 @@ import {
   PreviewServiceLimitError,
   PreviewServiceNotFoundError,
   PreviewServiceQuotaError,
+  PreviewServiceSecretNotAllowedError,
   PreviewServiceTtlCapError,
 } from './errors';
 import { PreviewServiceLifecycleService } from './preview-service.service';
@@ -315,6 +316,49 @@ describe('PreviewServiceLifecycleService.start', () => {
 
     await expect(service.start(baseRequest())).rejects.toBe(boom);
     expect(deletePod).toHaveBeenCalledTimes(1);
+  });
+
+  it('secrets: solo los habilitados por el owner; uno no habilitado se rechaza ANTES de tocar el clúster', async () => {
+    const { k8s, createPod, createNetworkPolicy } = fakeK8s();
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig({ PREVIEW_SERVICE_ALLOWED_CREDENTIALS: 'brevo' }),
+    );
+
+    const ok = await service.start(baseRequest({ secrets: ['brevo'] }));
+    expect(ok.status).toBe('running');
+    const pod = (createPod as Mock).mock.calls[0]?.[0] as V1Pod;
+    expect(pod.spec?.containers[0]?.envFrom).toEqual([
+      { secretRef: { name: 'demo-secret-brevo', optional: false } },
+    ]);
+
+    const calls = (createPod as Mock).mock.calls.length;
+    await expect(
+      service.start(baseRequest({ secrets: ['brevo', 'aws'] })),
+    ).rejects.toBeInstanceOf(PreviewServiceSecretNotAllowedError);
+    await expect(
+      service.start(baseRequest({ secrets: ['../x'] })),
+    ).rejects.toBeInstanceOf(PreviewServiceSecretNotAllowedError);
+    expect((createPod as Mock).mock.calls.length).toBe(calls); // nada se creó
+    expect(createNetworkPolicy).toHaveBeenCalledTimes(1); // solo la de la demo válida
+  });
+
+  it('secrets sin ninguno habilitado (config por defecto): cualquier pedido se rechaza', async () => {
+    const { k8s, createPod } = fakeK8s();
+    const service = new PreviewServiceLifecycleService(
+      new RbacValidatorService(),
+      k8s,
+      fakeConfig(),
+    );
+
+    const error = await service
+      .start(baseRequest({ secrets: ['brevo'] }))
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PreviewServiceSecretNotAllowedError);
+    expect((error as Error).message).toContain('ninguno habilitado');
+    expect(createPod).not.toHaveBeenCalled();
   });
 
   it('acota ttlSeconds al cap duro configurado, nunca confía en el valor del request', async () => {
