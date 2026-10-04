@@ -46,6 +46,18 @@ export const DB_ENGINE_ANNOTATION = 'jin.io/db-engine';
 export const SECRETS_ANNOTATION = 'jin.io/secrets';
 export const DEMO_SECRET_PREFIX = 'demo-secret-';
 
+/**
+ * Variables de entorno de UNA demo (ADR 0020): Secret `demo-env-<serviceId>` con
+ * ownerReference al pod, así Kubernetes lo borra cuando se borra el pod.
+ */
+export const DEMO_ENV_SECRET_PREFIX = 'demo-env-';
+/** Solo los NOMBRES de las variables (nunca los valores). */
+export const ENV_NAMES_ANNOTATION = 'jin.io/env-names';
+
+export function demoEnvSecretNameForId(serviceId: string): string {
+  return `${DEMO_ENV_SECRET_PREFIX}${serviceId}`;
+}
+
 export function servicePodNameForId(serviceId: string): string {
   return `agent-service-${serviceId}`;
 }

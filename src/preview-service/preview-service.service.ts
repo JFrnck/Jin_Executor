@@ -15,6 +15,8 @@ import {
 } from '../k8s/network-policy.builder';
 import {
   DB_ENGINE_ANNOTATION,
+  demoEnvSecretNameForId,
+  ENV_NAMES_ANNOTATION,
   JINSERVER_TLS_SECRET_NAME,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
@@ -58,6 +60,7 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
   const expired = new Date(expiresAt).getTime() <= Date.now();
   const requestId = pod.metadata?.annotations?.[REQUEST_ID_ANNOTATION];
   const db = pod.metadata?.annotations?.[DB_ENGINE_ANNOTATION];
+  const envNames = pod.metadata?.annotations?.[ENV_NAMES_ANNOTATION];
   return {
     id: serviceId,
     slug,
@@ -66,6 +69,7 @@ function podToInfo(pod: V1Pod): PreviewServiceInfo {
     expiresAt,
     ...(requestId ? { requestId } : {}),
     ...(db ? { db } : {}),
+    ...(envNames ? { envNames: envNames.split(',') } : {}),
   };
 }
 
@@ -176,6 +180,9 @@ export class PreviewServiceLifecycleService {
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
     const namespace = this.k8s.namespace;
 
+    const envNames = Object.keys(request.env ?? {});
+    const envSecretName = demoEnvSecretNameForId(serviceId);
+
     const podSpec = buildServicePodSpec({
       serviceId,
       slug,
@@ -188,6 +195,10 @@ export class PreviewServiceLifecycleService {
       requestId: request.requestId,
       mailEgress: request.mailEgress,
       secrets: request.secrets,
+      envSecret:
+        envNames.length > 0
+          ? { name: envSecretName, names: envNames }
+          : undefined,
       npmRegistryUrl: request.npm ? this.npmRegistryUrl : undefined,
       // Contraseña aleatoria POR DEMO (no es un secreto real: solo evita que otra demo del
       // clúster entre; la base solo escucha en 127.0.0.1 del propio pod).
@@ -224,7 +235,36 @@ export class PreviewServiceLifecycleService {
           }),
         );
       }
-      await this.k8s.createPod(podSpec);
+      // Variables de ESTA demo: el Secret existe ANTES que el pod (el contenedor lo pide al
+      // arrancar). El valor solo viaja en este objeto: no se loguea ni se devuelve.
+      if (envNames.length > 0) {
+        await this.k8s.createSecret({
+          apiVersion: 'v1',
+          kind: 'Secret',
+          type: 'Opaque',
+          metadata: {
+            name: envSecretName,
+            namespace,
+            labels: { [SERVICE_ID_LABEL]: serviceId },
+          },
+          stringData: request.env ?? {},
+        });
+      }
+      const created = await this.k8s.createPod(podSpec);
+      if (envNames.length > 0) {
+        // Ligar el Secret al pod: si se borra el pod (TTL, stop, reaper) Kubernetes lo borra
+        // solo. Sin uid no hay forma segura de ligarlo: se aborta (y se limpia todo).
+        const uid = created.metadata?.uid;
+        if (!uid) {
+          throw new Error(
+            'No se pudo ligar el Secret de variables al pod (el pod no devolvió uid).',
+          );
+        }
+        await this.k8s.setSecretOwnerPod(envSecretName, {
+          name: servicePodNameForId(serviceId),
+          uid,
+        });
+      }
       await this.k8s.createNetworkPolicy(networkPolicy);
       await this.k8s.createService(service);
       await this.k8s.createIngressRoute(ingressRoute);
@@ -243,6 +283,7 @@ export class PreviewServiceLifecycleService {
       status: 'running',
       expiresAt: expiresAt.toISOString(),
       ...(request.db ? { db: request.db } : {}),
+      ...(envNames.length > 0 ? { envNames } : {}),
     };
   }
 
@@ -304,6 +345,8 @@ export class PreviewServiceLifecycleService {
     await this.k8s.deleteNetworkPolicy(ingressNetworkPolicyName(serviceId));
     await this.k8s.deleteNetworkPolicy(serviceEgressPolicyName(serviceId));
     await this.k8s.deletePod(podName);
+    // Las variables de la demo (no-throw: con ownerReference ya se van con el pod).
+    await this.k8s.deleteSecret(demoEnvSecretNameForId(serviceId));
   }
 
   /**

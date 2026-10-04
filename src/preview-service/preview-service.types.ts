@@ -11,4 +11,6 @@ export interface PreviewServiceInfo {
   readonly requestId?: string;
   /** Motor de base de datos de la demo (si pidió uno). */
   readonly db?: string;
+  /** Nombres de las variables de entorno de la demo (nunca los valores). */
+  readonly envNames?: readonly string[];
 }

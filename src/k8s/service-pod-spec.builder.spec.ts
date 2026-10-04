@@ -150,6 +150,33 @@ describe('buildServicePodSpec', () => {
     ).not.toContain('envFrom');
   });
 
+  it('envSecret: envFrom del Secret de la demo (junto con los compartidos) y anotación solo con NOMBRES', () => {
+    const pod = buildServicePodSpec({
+      ...baseInput,
+      secrets: ['brevo'],
+      envSecret: { name: 'demo-env-svc-1', names: ['A_KEY', 'B_KEY'] },
+    });
+
+    expect(pod.spec?.containers[0]?.envFrom).toEqual([
+      { secretRef: { name: 'demo-secret-brevo', optional: false } },
+      { secretRef: { name: 'demo-env-svc-1', optional: false } },
+    ]);
+    expect(pod.metadata?.annotations?.['jin.io/env-names']).toBe('A_KEY,B_KEY');
+
+    const only = buildServicePodSpec({
+      ...baseInput,
+      envSecret: { name: 'demo-env-svc-1', names: ['A_KEY'] },
+    });
+    expect(only.spec?.containers[0]?.envFrom).toEqual([
+      { secretRef: { name: 'demo-env-svc-1', optional: false } },
+    ]);
+    expect(
+      buildServicePodSpec(baseInput).metadata?.annotations?.[
+        'jin.io/env-names'
+      ],
+    ).toBeUndefined();
+  });
+
   it('restartPolicy: Always (opuesto a los pods run-to-completion) — nunca activeDeadlineSeconds', () => {
     const pod = buildServicePodSpec(baseInput);
     expect(pod.spec?.restartPolicy).toBe('Always');

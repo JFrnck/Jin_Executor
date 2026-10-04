@@ -3,6 +3,7 @@ import { buildDemoDb, type DemoDbEngine } from './demo-db.builder';
 import {
   DB_ENGINE_ANNOTATION,
   DEMO_SECRET_PREFIX,
+  ENV_NAMES_ANNOTATION,
   SECRETS_ANNOTATION,
   REQUEST_ID_ANNOTATION,
   SERVICE_EXPIRES_AT_ANNOTATION,
@@ -46,6 +47,9 @@ export interface BuildServicePodSpecInput {
   readonly npmRegistryUrl?: string | undefined;
   /** Nombres de secretos de demo (Secret `demo-secret-<n>`): se inyectan como variables de entorno. */
   readonly secrets?: readonly string[] | undefined;
+  /** Secret con las variables de ESTA demo (ya creado; se liga al pod después). */
+  readonly envSecret?:
+    { readonly name: string; readonly names: readonly string[] } | undefined;
   /** Base de datos de demo (contenedor auxiliar o archivo sqlite) con su contraseña aleatoria. */
   readonly db?:
     { readonly engine: DemoDbEngine; readonly password: string } | undefined;
@@ -111,6 +115,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
         ...(input.db ? { [DB_ENGINE_ANNOTATION]: input.db.engine } : {}),
         ...(input.secrets?.length
           ? { [SECRETS_ANNOTATION]: input.secrets.join(',') }
+          : {}),
+        ...(input.envSecret
+          ? { [ENV_NAMES_ANNOTATION]: input.envSecret.names.join(',') }
           : {}),
       },
     },
@@ -183,14 +190,27 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
           // El valor NUNCA pasa por el Executor: K8s resuelve el Secret al arrancar el contenedor.
           // `optional: false`: si el Secret no existe el pod falla ruidosamente
           // (CreateContainerConfigError) en vez de arrancar sin la clave.
-          ...(input.secrets?.length
+          ...(input.secrets?.length || input.envSecret
             ? {
-                envFrom: input.secrets.map((name) => ({
-                  secretRef: {
-                    name: `${DEMO_SECRET_PREFIX}${name}`,
-                    optional: false,
-                  },
-                })),
+                envFrom: [
+                  ...(input.secrets ?? []).map((name) => ({
+                    secretRef: {
+                      name: `${DEMO_SECRET_PREFIX}${name}`,
+                      optional: false,
+                    },
+                  })),
+                  // Las variables de ESTA demo (se borran con el pod).
+                  ...(input.envSecret
+                    ? [
+                        {
+                          secretRef: {
+                            name: input.envSecret.name,
+                            optional: false,
+                          },
+                        },
+                      ]
+                    : []),
+                ],
               }
             : {}),
           env: [

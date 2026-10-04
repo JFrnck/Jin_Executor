@@ -10,6 +10,7 @@ import {
   NetworkingV1Api,
   type V1NetworkPolicy,
   type V1PersistentVolumeClaim,
+  type V1Secret,
   type V1Pod,
   type V1Service,
   type V1Status,
@@ -628,6 +629,55 @@ export class K8sService {
       });
     } catch (error) {
       this.logDeleteFailure('deleteNetworkPolicy', name, error);
+    }
+  }
+
+  /**
+   * Secret de las variables de entorno de una demo. LANZA si falla: sin él el pod no
+   * arrancaría. El Executor puede crear/parchear/borrar Secrets pero NO leerlos (Role sin
+   * get/list): el valor nunca se puede leer de vuelta por esta ruta.
+   */
+  async createSecret(secret: V1Secret): Promise<void> {
+    await this.coreApi.createNamespacedSecret({
+      namespace: this.namespace,
+      body: secret,
+    });
+  }
+
+  /** Liga el Secret al pod: cuando el pod se borra, Kubernetes lo borra solo. LANZA si falla. */
+  async setSecretOwnerPod(
+    secretName: string,
+    pod: { name: string; uid: string },
+  ): Promise<void> {
+    await this.coreApi.patchNamespacedSecret({
+      name: secretName,
+      namespace: this.namespace,
+      body: [
+        {
+          op: 'add',
+          path: '/metadata/ownerReferences',
+          value: [
+            {
+              apiVersion: 'v1',
+              kind: 'Pod',
+              name: pod.name,
+              uid: pod.uid,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  /** Nunca lanza (el Secret pudo irse ya con su pod). */
+  async deleteSecret(name: string): Promise<void> {
+    try {
+      await this.coreApi.deleteNamespacedSecret({
+        name,
+        namespace: this.namespace,
+      });
+    } catch (error) {
+      this.logDeleteFailure('deleteSecret', name, error);
     }
   }
 

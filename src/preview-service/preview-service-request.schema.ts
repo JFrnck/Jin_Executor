@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DEMO_DB_ENGINES } from '../k8s/demo-db.builder';
+import { validateDemoEnv } from './demo-env';
 import { isSafeRelativePath } from './tar-payload';
 
 /** Contrato de POST /services (Fase 5.5, ADR 0006) — mismo criterio que ExecuteRequestSchema: toda entrada HTTP se valida con Zod, en el borde. */
@@ -48,6 +49,19 @@ export const StartPreviewServiceRequestSchema = z.object({
   secrets: z
     .array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,38}$/))
     .max(5)
+    .optional(),
+  // Variables de entorno de ESTA demo (valores incluidos): el Executor las guarda en un Secret
+  // `demo-env-<id>` ligado al pod, que se borra con él. Nunca se loguean ni se devuelven.
+  env: z
+    .record(z.string(), z.string())
+    .superRefine((env, ctx) => {
+      for (const problem of validateDemoEnv(env)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `${problem.name}: ${problem.reason}`,
+        });
+      }
+    })
     .optional(),
   // Aprobación (HITL) que originó el pod; lo manda Jin_Core para enlazarlo con el audit.
   requestId: z.string().uuid().optional(),

@@ -117,3 +117,28 @@ describe('secrets', () => {
     ).toBe(true);
   });
 });
+
+describe('env (variables de la demo)', () => {
+  // Construido en ejecución (nada con forma de credencial en el repo).
+  const VALUE = `w${'5678901234'.repeat(3)}`;
+
+  it('acepta variables válidas; es opcional', () => {
+    const parse = (env: unknown) =>
+      StartPreviewServiceRequestSchema.safeParse(validRequest({ env }));
+    expect(parse({ BREVO_API_KEY: VALUE }).success).toBe(true);
+    expect(parse({}).success).toBe(true);
+    expect(
+      StartPreviewServiceRequestSchema.safeParse(validRequest()).success,
+    ).toBe(true);
+    expect(parse({ BREVO_API_KEY: 5 }).success).toBe(false);
+  });
+
+  it('rechaza nombres reservados o inválidos, y el error NO repite el valor', () => {
+    const result = StartPreviewServiceRequestSchema.safeParse(
+      validRequest({ env: { PORT: VALUE, malo: VALUE } }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).not.toContain(VALUE);
+    expect(JSON.stringify(result.error?.issues)).toContain('PORT');
+  });
+});

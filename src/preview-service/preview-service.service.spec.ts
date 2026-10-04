@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { V1Pod } from '@kubernetes/client-node';
@@ -27,6 +28,9 @@ function fakeK8s(overrides: Partial<Record<keyof K8sService, unknown>> = {}) {
   const deleteService = vi.fn().mockResolvedValue(undefined);
   const deleteNetworkPolicy = vi.fn().mockResolvedValue(undefined);
   const deletePod = vi.fn().mockResolvedValue(undefined);
+  const createSecret = vi.fn().mockResolvedValue(undefined);
+  const setSecretOwnerPod = vi.fn().mockResolvedValue(undefined);
+  const deleteSecret = vi.fn().mockResolvedValue(undefined);
 
   const mocks = {
     listPodsByLabel,
@@ -38,6 +42,9 @@ function fakeK8s(overrides: Partial<Record<keyof K8sService, unknown>> = {}) {
     deleteService,
     deleteNetworkPolicy,
     deletePod,
+    createSecret,
+    setSecretOwnerPod,
+    deleteSecret,
     ...overrides,
   };
 
@@ -359,6 +366,174 @@ describe('PreviewServiceLifecycleService.start', () => {
     expect(error).toBeInstanceOf(PreviewServiceSecretNotAllowedError);
     expect((error as Error).message).toContain('ninguno habilitado');
     expect(createPod).not.toHaveBeenCalled();
+  });
+
+  describe('variables de entorno de la demo (ADR 0020)', () => {
+    // Valores de ejemplo construidos en ejecución (nada con forma de credencial en el repo).
+    const VALUE = `v${'0123456789'.repeat(3)}`;
+    const env = { BREVO_API_KEY: VALUE, BREVO_SENDER_NAME: 'evento' };
+
+    function podWithUid(uid: string | undefined) {
+      return vi.fn().mockResolvedValue(uid ? { metadata: { uid } } : {});
+    }
+
+    it('crea el Secret ANTES del pod y lo liga al pod (ownerReference) con su uid; el pod lo recibe por envFrom', async () => {
+      const order: string[] = [];
+      const createSecret = vi.fn((s: { metadata?: { name?: string } }) => {
+        order.push(`secret:${s.metadata?.name ?? ''}`);
+        return Promise.resolve();
+      });
+      const createPod = vi.fn((pod: V1Pod) => {
+        order.push('pod');
+        void pod;
+        return Promise.resolve({ metadata: { uid: 'uid-123' } });
+      });
+      const setSecretOwnerPod = vi.fn(
+        (name: string, pod: { name: string; uid: string }) => {
+          order.push(`owner:${name}->${pod.uid}`);
+          return Promise.resolve();
+        },
+      );
+      const { k8s } = fakeK8s({ createSecret, createPod, setSecretOwnerPod });
+      const service = new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      );
+
+      const info = await service.start(baseRequest({ env }));
+
+      expect(order[0]).toMatch(/^secret:demo-env-/);
+      expect(order[1]).toBe('pod');
+      expect(order[2]).toMatch(/^owner:demo-env-.+->uid-123$/);
+      const pod = createPod.mock.calls[0]?.[0];
+      expect(pod?.spec?.containers[0]?.envFrom).toEqual([
+        {
+          secretRef: {
+            name: order[0]?.replace('secret:', ''),
+            optional: false,
+          },
+        },
+      ]);
+      // La respuesta lleva los NOMBRES, nunca los valores.
+      expect(info.envNames).toEqual(['BREVO_API_KEY', 'BREVO_SENDER_NAME']);
+      expect(JSON.stringify(info)).not.toContain(VALUE);
+      expect(pod?.metadata?.annotations?.['jin.io/env-names']).toBe(
+        'BREVO_API_KEY,BREVO_SENDER_NAME',
+      );
+      expect(JSON.stringify(pod)).not.toContain(VALUE); // el valor NO está en el pod spec
+    });
+
+    it('sin variables: no se crea ningún Secret ni se intenta ligar nada', async () => {
+      const { k8s, createSecret, setSecretOwnerPod } = fakeK8s();
+      const service = new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      );
+
+      await service.start(baseRequest());
+      await service.start(baseRequest({ env: {} }));
+
+      expect(createSecret).not.toHaveBeenCalled();
+      expect(setSecretOwnerPod).not.toHaveBeenCalled();
+    });
+
+    it('si el pod no devuelve uid o falla el ligado, se aborta y se borra TODO (nada huérfano)', async () => {
+      for (const failure of ['sin-uid', 'patch-falla'] as const) {
+        const { k8s, deleteSecret, deletePod } = fakeK8s({
+          createPod:
+            failure === 'sin-uid' ? podWithUid(undefined) : podWithUid('u1'),
+          setSecretOwnerPod: vi
+            .fn()
+            .mockRejectedValue(new Error('403 forbidden')),
+        });
+        const service = new PreviewServiceLifecycleService(
+          new RbacValidatorService(),
+          k8s,
+          fakeConfig(),
+        );
+
+        await expect(service.start(baseRequest({ env }))).rejects.toThrow();
+
+        expect(deleteSecret).toHaveBeenCalledWith(
+          expect.stringMatching(/^demo-env-/),
+        );
+        expect(deletePod).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('si el Secret no se puede crear, no se crea el pod', async () => {
+      const { k8s, createPod } = fakeK8s({
+        createSecret: vi
+          .fn()
+          .mockRejectedValue(new Error('forbidden: secrets')),
+      });
+      const service = new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      );
+
+      await expect(service.start(baseRequest({ env }))).rejects.toThrow(
+        'forbidden',
+      );
+      expect(createPod).not.toHaveBeenCalled();
+    });
+
+    it('stop() borra también el Secret de la demo', async () => {
+      const { k8s, deleteSecret } = fakeK8s();
+      await new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      ).stop('svc-1');
+      expect(deleteSecret).toHaveBeenCalledWith('demo-env-svc-1');
+    });
+
+    it('el valor nunca sale en los logs del servicio', async () => {
+      const spies = (['log', 'warn', 'error', 'debug'] as const).map((level) =>
+        vi.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+      );
+      const { k8s } = fakeK8s({ createPod: podWithUid('uid-1') });
+      const service = new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      );
+      await service.start(baseRequest({ env }));
+      const logged = spies
+        .flatMap((spy) => spy.mock.calls)
+        .flat()
+        .map(String)
+        .join('\n');
+      for (const spy of spies) spy.mockRestore();
+      expect(logged).not.toContain(VALUE);
+    });
+
+    it('list() devuelve solo los NOMBRES de las variables (anotación)', async () => {
+      const pods: V1Pod[] = [
+        {
+          metadata: {
+            labels: { 'jin.io/service-id': 'a' },
+            annotations: {
+              'jin.io/expires-at': new Date(Date.now() + 60_000).toISOString(),
+              'jin.io/slug': 'x-abc123',
+              'jin.io/env-names': 'A_KEY,B_KEY',
+            },
+          },
+        },
+      ];
+      const { k8s } = fakeK8s({
+        listPodsByLabel: vi.fn().mockResolvedValue(pods),
+      });
+      const result = await new PreviewServiceLifecycleService(
+        new RbacValidatorService(),
+        k8s,
+        fakeConfig(),
+      ).list();
+      expect(result[0]?.envNames).toEqual(['A_KEY', 'B_KEY']);
+    });
   });
 
   it('acota ttlSeconds al cap duro configurado, nunca confía en el valor del request', async () => {
