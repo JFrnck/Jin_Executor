@@ -122,6 +122,34 @@ describe('buildServicePodSpec', () => {
     );
   });
 
+  it('secrets: el contenedor recibe el Secret demo-secret-<n> por envFrom (el valor nunca pasa por el Executor) y falla si no existe', () => {
+    const pod = buildServicePodSpec({
+      ...baseInput,
+      secrets: ['brevo', 'otro'],
+    });
+
+    const app = pod.spec?.containers[0];
+    expect(app?.envFrom).toEqual([
+      { secretRef: { name: 'demo-secret-brevo', optional: false } },
+      { secretRef: { name: 'demo-secret-otro', optional: false } },
+    ]);
+    expect(pod.metadata?.annotations?.['jin.io/secrets']).toBe('brevo,otro');
+    // Solo se referencian por nombre: ninguna variable lleva un valor de secreto.
+    const names = (app?.env ?? []).map((e) => e.name);
+    expect(names.some((n) => /BREVO|KEY|SECRET|TOKEN/i.test(n))).toBe(false);
+  });
+
+  it('sin secrets: ni envFrom ni anotación (el pod no recibe ningún secreto)', () => {
+    const pod = buildServicePodSpec(baseInput);
+    expect(pod.spec?.containers[0]?.envFrom).toBeUndefined();
+    expect(pod.metadata?.annotations?.['jin.io/secrets']).toBeUndefined();
+    expect(
+      JSON.stringify(
+        buildServicePodSpec({ ...baseInput, secrets: [] }).spec?.containers[0],
+      ),
+    ).not.toContain('envFrom');
+  });
+
   it('restartPolicy: Always (opuesto a los pods run-to-completion) — nunca activeDeadlineSeconds', () => {
     const pod = buildServicePodSpec(baseInput);
     expect(pod.spec?.restartPolicy).toBe('Always');

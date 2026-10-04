@@ -48,3 +48,13 @@ export class PreviewServiceQuotaError extends JinError {
     );
   }
 }
+
+/** La demo pide un secreto que el owner no habilitó (`PREVIEW_SERVICE_ALLOWED_SECRETS`). */
+export class PreviewServiceSecretNotAllowedError extends JinError {
+  constructor(name: string, allowed: readonly string[]) {
+    super(
+      `El secreto "${name}" no está habilitado para demos${allowed.length > 0 ? ` (habilitados: ${allowed.join(', ')})` : ' (ninguno habilitado)'}.`,
+      { code: 'PREVIEW_SERVICE_SECRET_NOT_ALLOWED', httpStatus: 403 },
+    );
+  }
+}
