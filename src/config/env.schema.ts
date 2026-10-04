@@ -64,7 +64,7 @@ export const EnvSchema = z.object({
     .default('registry-proxy'),
   // Secretos de demo habilitados (nombres separados por coma, p. ej. "brevo"): cada uno es un
   // Secret `demo-secret-<nombre>` en agents-sandbox. Vacío = ninguna demo puede pedir secretos.
-  PREVIEW_SERVICE_ALLOWED_SECRETS: z.string().default(''),
+  PREVIEW_SERVICE_ALLOWED_CREDENTIALS: z.string().default(''),
   PREVIEW_SERVICE_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
   // src/terminal (ADR 0016): sesiones de terminal del owner. La única salida
   // de red de esos pods es el proxy de npm del clúster (Verdaccio).

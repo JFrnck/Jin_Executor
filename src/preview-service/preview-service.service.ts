@@ -132,7 +132,7 @@ export class PreviewServiceLifecycleService {
     );
     this.registryPort = Number(new URL(this.npmRegistryUrl).port) || 4873;
     this.allowedSecrets = configService
-      .get<string>('PREVIEW_SERVICE_ALLOWED_SECRETS', '')
+      .get<string>('PREVIEW_SERVICE_ALLOWED_CREDENTIALS', '')
       .split(',')
       .map((name) => name.trim())
       .filter(Boolean);

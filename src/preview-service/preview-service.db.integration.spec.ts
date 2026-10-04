@@ -133,7 +133,7 @@ describe('Demos con base de datos (integración, K3s real)', () => {
       // Cada test para su demo, pero el pod tarda en irse (terminando sigue contando): este
       // archivo no prueba el límite de concurrencia, así que se deja holgado.
       PREVIEW_SERVICE_MAX_CONCURRENT: 10,
-      PREVIEW_SERVICE_ALLOWED_SECRETS: 'brevo,faltante',
+      PREVIEW_SERVICE_ALLOWED_CREDENTIALS: 'brevo,faltante',
     });
     k8s = new K8sService(configService);
     service = new PreviewServiceLifecycleService(

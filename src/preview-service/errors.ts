@@ -49,7 +49,7 @@ export class PreviewServiceQuotaError extends JinError {
   }
 }
 
-/** La demo pide un secreto que el owner no habilitó (`PREVIEW_SERVICE_ALLOWED_SECRETS`). */
+/** La demo pide un secreto que el owner no habilitó (`PREVIEW_SERVICE_ALLOWED_CREDENTIALS`). */
 export class PreviewServiceSecretNotAllowedError extends JinError {
   constructor(name: string, allowed: readonly string[]) {
     super(

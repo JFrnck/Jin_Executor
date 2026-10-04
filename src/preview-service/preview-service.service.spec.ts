@@ -323,7 +323,7 @@ describe('PreviewServiceLifecycleService.start', () => {
     const service = new PreviewServiceLifecycleService(
       new RbacValidatorService(),
       k8s,
-      fakeConfig({ PREVIEW_SERVICE_ALLOWED_SECRETS: 'brevo' }),
+      fakeConfig({ PREVIEW_SERVICE_ALLOWED_CREDENTIALS: 'brevo' }),
     );
 
     const ok = await service.start(baseRequest({ secrets: ['brevo'] }));

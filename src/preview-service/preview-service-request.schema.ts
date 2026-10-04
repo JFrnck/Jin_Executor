@@ -44,7 +44,7 @@ export const StartPreviewServiceRequestSchema = z.object({
   // Secretos de demo que el pod recibe como variables de entorno (p. ej. "brevo": la clave
   // del correo). Cada nombre es un Secret `demo-secret-<nombre>` en agents-sandbox que crea el
   // owner; el Executor NO lo lee (no tiene permiso): solo lo referencia en el pod. Solo los
-  // nombres habilitados en `PREVIEW_SERVICE_ALLOWED_SECRETS`.
+  // nombres habilitados en `PREVIEW_SERVICE_ALLOWED_CREDENTIALS`.
   secrets: z
     .array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,38}$/))
     .max(5)
