@@ -9,6 +9,8 @@ import {
   SERVICE_EXPIRES_AT_ANNOTATION,
   MAIL_EGRESS_LABEL,
   MAIL_EGRESS_LABEL_VALUE,
+  MAIL_EGRESS_PROXY_ENV,
+  MAIL_EGRESS_PROXY_URL,
   NPM_LABEL,
   NPM_LABEL_VALUE,
   SERVICE_ID_LABEL,
@@ -222,6 +224,9 @@ export function buildServicePodSpec(input: BuildServicePodSpecInput): V1Pod {
             },
             ...(input.npmRegistryUrl ? npmEnv(input.npmRegistryUrl) : []),
             ...(demoDb?.appEnv ?? []),
+            ...(input.mailEgress
+              ? [{ name: MAIL_EGRESS_PROXY_ENV, value: MAIL_EGRESS_PROXY_URL }]
+              : []),
           ],
           volumeMounts: [
             { name: WORKSPACE_VOLUME, mountPath: WORKSPACE_MOUNT_PATH },

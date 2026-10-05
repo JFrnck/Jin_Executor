@@ -26,6 +26,13 @@ export const JINSERVER_TLS_SECRET_NAME = 'wildcard-jinserver-com-tls';
  */
 export const MAIL_EGRESS_LABEL = 'jin.io/mail-egress';
 export const MAIL_EGRESS_LABEL_VALUE = 'enabled';
+/**
+ * Proxy de correo (HTTP CONNECT, solo `api.brevo.com:443`). Con `mailEgress` el pod recibe esta
+ * URL en `MAIL_EGRESS_PROXY` (no es secreto): el owner no tiene que escribirla como variable.
+ */
+export const MAIL_EGRESS_PROXY_ENV = 'MAIL_EGRESS_PROXY';
+export const MAIL_EGRESS_PROXY_URL =
+  'http://mail-egress.mail-egress.svc.cluster.local:3128';
 
 /**
  * Pod de servicio que puede instalar dependencias por el proxy de npm

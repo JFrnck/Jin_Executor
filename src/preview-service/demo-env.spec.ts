@@ -45,6 +45,7 @@ describe('validateDemoEnv', () => {
       'REDIS_URL',
       'MONGODB_URI',
       'SQLITE_PATH',
+      'MAIL_EGRESS_PROXY',
       'HTTP_PROXY',
       'HTTPS_PROXY',
       'NO_PROXY',
