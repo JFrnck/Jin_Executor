@@ -53,6 +53,20 @@ describe('buildServicePodSpec', () => {
     });
   });
 
+  it('mailEgress: el pod recibe MAIL_EGRESS_PROXY (no secreto); sin la bandera, no', () => {
+    const names = (input: Parameters<typeof buildServicePodSpec>[0]) =>
+      Object.fromEntries(
+        (buildServicePodSpec(input).spec?.containers[0]?.env ?? []).map((e) => [
+          e.name,
+          e.value,
+        ]),
+      );
+    expect(names(baseInput).MAIL_EGRESS_PROXY).toBeUndefined();
+    expect(names({ ...baseInput, mailEgress: true }).MAIL_EGRESS_PROXY).toBe(
+      'http://mail-egress.mail-egress.svc.cluster.local:3128',
+    );
+  });
+
   it('npmRegistryUrl: label jin.io/npm y variables de npm con ignore-scripts SIEMPRE; sin la URL, nada de eso', () => {
     const plain = buildServicePodSpec(baseInput);
     expect(plain.metadata?.labels?.['jin.io/npm']).toBeUndefined();

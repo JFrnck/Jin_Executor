@@ -25,6 +25,8 @@ const RESERVED_NAMES: ReadonlySet<string> = new Set([
   'REDIS_URL',
   'MONGODB_URI',
   'SQLITE_PATH',
+  // La inyecta Jin con `mailEgress` (URL del proxy de correo).
+  'MAIL_EGRESS_PROXY',
   // Proxies: cambiarlos podría saltarse las salidas controladas del pod.
   'HTTP_PROXY',
   'HTTPS_PROXY',
