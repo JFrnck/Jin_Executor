@@ -5,6 +5,8 @@ import { GithubAuthError, GithubDisabledError } from './errors';
 
 /** Un token de instalación vive 1 h; se reusa mientras le queden más de 5 min. */
 const TOKEN_REUSE_MARGIN_MS = 5 * 60_000;
+/** 100 repos por página; 5 páginas = 500 repos, de sobra para una cuenta personal. */
+const MAX_REPO_PAGES = 5;
 
 interface CachedToken {
   readonly token: string;
@@ -136,4 +138,103 @@ export class GithubAppService {
     });
     return body.token;
   }
+
+  /**
+   * Repos en los que la App está instalada (los ÚNICOS que Jin puede clonar o tocar). El token que
+   * se usa aquí solo lleva `metadata: read` y no sale de este método.
+   */
+  async listRepositories(): Promise<InstalledRepo[]> {
+    const token = await this.mintInstallationToken('*', {
+      metadata: 'read',
+    });
+    const repos: InstalledRepo[] = [];
+    for (let page = 1; page <= MAX_REPO_PAGES; page++) {
+      const response = await fetch(
+        `${this.apiBase}/installation/repositories?per_page=100&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'jin-executor',
+          },
+        },
+      );
+      if (!response.ok) {
+        throw new GithubAuthError(
+          `GitHub no listó los repos de la instalación (HTTP ${response.status}).`,
+        );
+      }
+      const body = (await response.json()) as {
+        repositories?: Array<{
+          full_name?: string;
+          private?: boolean;
+          default_branch?: string;
+          description?: string | null;
+        }>;
+      };
+      const batch = body.repositories ?? [];
+      for (const repo of batch) {
+        if (!repo.full_name) continue;
+        repos.push({
+          fullName: repo.full_name,
+          private: repo.private === true,
+          defaultBranch: repo.default_branch ?? 'main',
+          description: repo.description ?? null,
+        });
+      }
+      if (batch.length < 100) break;
+    }
+    return repos.sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }
+
+  /** ¿La App está instalada en `repo`? (lista blanca de verdad: lo que GitHub dice, no una variable). */
+  async isInstalled(repo: string): Promise<boolean> {
+    const wanted = repo.toLowerCase();
+    return (await this.listRepositories()).some(
+      (candidate) => candidate.fullName.toLowerCase() === wanted,
+    );
+  }
+
+  /** Pide un token de instalación (sin guardarlo): `repositories = ['*']` = sin restricción de repo. */
+  private async mintInstallationToken(
+    repoName: string,
+    permissions: Record<string, string>,
+  ): Promise<string> {
+    const jwt = this.createAppJwt();
+    const response = await fetch(
+      `${this.apiBase}/app/installations/${encodeURIComponent(this.installationId)}/access_tokens`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+          'User-Agent': 'jin-executor',
+        },
+        body: JSON.stringify({
+          ...(repoName === '*' ? {} : { repositories: [repoName] }),
+          permissions,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new GithubAuthError(
+        `GitHub rechazó el token de instalación (HTTP ${response.status}).`,
+      );
+    }
+    const body = (await response.json()) as { token?: string };
+    if (!body.token) {
+      throw new GithubAuthError('GitHub no devolvió un token de instalación.');
+    }
+    return body.token;
+  }
+}
+
+export interface InstalledRepo {
+  readonly fullName: string;
+  readonly private: boolean;
+  readonly defaultBranch: string;
+  readonly description: string | null;
 }

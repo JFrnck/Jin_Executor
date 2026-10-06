@@ -39,3 +39,10 @@ export class GithubGitError extends JinError {
     super(message, { code: 'GITHUB_GIT_FAILED', httpStatus: 502 });
   }
 }
+
+/** La operación choca con el estado actual (carpeta con archivos, rama que no avanza en fast-forward…). */
+export class GithubConflictError extends JinError {
+  constructor(message: string) {
+    super(message, { code: 'GITHUB_CONFLICT', httpStatus: 409 });
+  }
+}
